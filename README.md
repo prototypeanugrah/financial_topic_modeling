@@ -21,6 +21,7 @@ This project provides a robust framework for topic modeling on financial documen
 
 - Python 3.x
 - Virtual environment (recommended)
+- uv (recommended for faster package installation)
 
 ## Installation
 
@@ -30,24 +31,29 @@ git clone git@github.com:prototypeanugrah/financial_topic_modeling.git
 cd financial_topic_modeling
 ```
 
-2. Create and activate a virtual environment:
+2. Install uv (if not already installed):
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-3. Install dependencies:
+3. Create and activate a virtual environment:
 ```bash
-pip install -r requirements.txt
+uv venv --python 3.11
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-4. Download required NLTK data:
+4. Install dependencies using uv:
+```bash
+uv pip install -r requirements.txt
+```
+
+5. Download required NLTK data:
 ```python
 import nltk
 nltk.download('stopwords')
 ```
 
-5. Install spaCy model:
+6. Install spaCy model:
 ```bash
 python -m spacy download en_core_web_sm
 ```
@@ -73,7 +79,7 @@ financial_topic_modeling/
 The main script can be run with the following command:
 
 ```bash
-python main.py
+uv run main.py
   --config config.yaml
   --data <path_to_documents>
   -n <num_docs>
@@ -88,7 +94,7 @@ Parameters:
 
 Example:
 ```bash
-python main.py --config config.yaml --data documents.txt -n 10 -m sklean
+uv run main.py --config config.yaml --data documents.txt -n 10 -m sklean
 ```
 
 ## Features
