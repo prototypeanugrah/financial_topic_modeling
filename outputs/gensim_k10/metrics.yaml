@@ -1,0 +1,66 @@
+coherence_metrics:
+  c_npmi: -0.2225315792107531
+  c_uci: -7.827789164449331
+  c_v: 0.5246916052565306
+  u_mass: -1.6426105130641573
+config:
+  lda:
+    gensim:
+      alpha: auto
+      chunksize: 100
+      eta: auto
+      num_topics: 10
+      passes: 20
+      per_word_topics: true
+      random_state: 100
+      update_every: 1
+    optimize_topics: false
+    sklearn:
+      batch_size: 100
+      learning_decay: 0.5
+      learning_method: online
+      max_iter: 25
+      n_components: 20
+      n_jobs: None
+      random_state: 100
+    topic_range:
+      limit: 120
+      start: 2
+      step: 5
+  logging:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level: INFO
+  output:
+    base_dir: outputs
+    save_metrics: true
+    save_model: true
+    save_visualizations: true
+  preprocessing:
+    allowed_postags:
+    - NOUN
+    - ADJ
+    - VERB
+    - ADV
+    debug:
+    - enabled: false
+    min_word_length: 3
+    model_type: lda
+    spacy_disabled:
+    - parser
+    - ner
+    spacy_model: en_core_web_sm
+    stop_words_extra: ./stopwords
+    tfidf_filtering:
+    - enabled: true
+    - threshold: 0.01
+    - remove_missing_words: true
+    vectorizer:
+    - min_df: 3
+    - max_features: 29999
+    - token_pattern: '[a-zA-Z0-9]{4,}'
+  visualization:
+    wordcloud:
+      background_color: white
+      height: 400
+      width: 800
+perplexity: -15.56454214639073

@@ -6,6 +6,8 @@ from gensim.models import ldamodel
 from gensim.corpora import Dictionary
 from tqdm import tqdm
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,6 @@ def performance_metrics(
     corpus: List[List[Tuple[int, int]]],
     texts: List[List[str]],
     id2word: Dictionary,
-    coherence_type: str = "u_mass",
 ) -> Tuple[float, Dict[str, float]]:
     """
     Calculate model performance metrics.
@@ -72,7 +73,6 @@ def performance_metrics(
         corpus: Document corpus in bow format
         texts: List of tokenized documents
         id2word: Dictionary mapping word IDs to words
-        coherence_type: Type of coherence metric to use
 
     Returns:
         Tuple containing:
@@ -110,6 +110,31 @@ def performance_metrics(
             coherence_metrics[metric] = None
 
     return perplexity, coherence_metrics
+
+
+def _train_single_model(
+    args: Tuple[
+        int,
+        List[List[Tuple[int, int]]],
+        Dictionary,
+        Dict[str, Any],
+        List[List[str]],
+    ],
+) -> Tuple[ldamodel.LdaModel, float, int]:
+    """
+    Helper function to train a single LDA model with given parameters.
+    This needs to be at module level for multiprocessing to work.
+
+    Args:
+        args: Tuple containing (num_topics, corpus, id2word, model_params, texts)
+
+    Returns:
+        Tuple of (trained model, perplexity, num_topics)
+    """
+    num_topics, corpus, id2word, model_params, texts = args
+    model = model_training(num_topics, corpus, id2word, model_params)
+    perplexity, _ = performance_metrics(model, corpus, texts, id2word)
+    return model, perplexity, num_topics
 
 
 def optimize_topic_number(
@@ -151,15 +176,40 @@ def optimize_topic_number(
         topic_range["step"],
     )
 
-    for num_topics in tqdm(topic_numbers, desc="Optimizing number of topics"):
-        try:
-            model = model_training(num_topics, corpus, id2word, model_params)
-            perplexity = model.log_perplexity(corpus)
-            perplexity_scores.append(perplexity)
-            models.append(model)
-        except Exception as e:
-            logger.error(f"Failed to train model with {num_topics} topics: {str(e)}")
-            continue
+    # Prepare arguments for parallel processing
+    train_args = [(n, corpus, id2word, model_params, texts) for n in topic_numbers]
+
+    # Determine number of processes (use max of 8 or number of CPU cores)
+    num_processes = min(8, mp.cpu_count())
+
+    # Use ProcessPoolExecutor for parallel processing
+    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+        # Submit all training tasks
+        future_to_topic = {
+            executor.submit(_train_single_model, args): args[0] for args in train_args
+        }
+
+        # Process results as they complete
+        results = []
+        for future in tqdm(
+            as_completed(future_to_topic),
+            total=len(topic_numbers),
+            desc="Optimizing number of topics",
+        ):
+            try:
+                model, perplexity, num_topics = future.result()
+                results.append((num_topics, model, perplexity))
+            except Exception as e:
+                logger.error(
+                    f"Model training failed for {future_to_topic[future]} topics: {str(e)}"
+                )
+
+    # Sort results by number of topics to maintain order
+    results.sort(key=lambda x: x[0])
+
+    # Unpack sorted results
+    models = [r[1] for r in results]
+    perplexity_scores = [r[2] for r in results]
 
     if not models:
         raise ValueError("Failed to train any models")
