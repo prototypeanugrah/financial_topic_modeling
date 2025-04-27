@@ -8,17 +8,16 @@ import requests
 import time
 import yaml
 
-from nltk.corpus import stopwords
 from gensim.utils import simple_preprocess
 from gensim import corpora
 from gensim import models
+from nltk.corpus import stopwords
 from tqdm.contrib.concurrent import process_map
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.feature_extraction.text import TfidfVectorizer
-import nltk
 import numpy as np
 import regex as re
 import spacy
+
+import utils
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ def load_data(
         List of document texts
     """
     try:
-        logger.info(f"Loading first {num_docs} URLs from {data_path}")
+        logger.info("Loading first %d URLs from %s", num_docs, data_path)
         documents = []
 
         with open(data_path, "r", encoding="utf-8") as f:
@@ -49,7 +48,7 @@ def load_data(
         if not urls:
             raise ValueError(f"No URLs found in {data_path}")
 
-        logger.info(f"Found {len(urls)} URLs to process")
+        logger.info("Found %d URLs to process", len(urls))
 
         # SEC specific headers with email identification
         headers = {
@@ -60,24 +59,24 @@ def load_data(
         # Fetch each document
         for i, url in enumerate(urls, 1):
             try:
-                logger.info(f"Fetching document {i} from {url}")
+                logger.info("Fetching document %d from %s", i, url)
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()  # Raise exception for bad status codes
                 documents.append(response.text)
-                logger.info(f"Successfully loaded document {i}")
+                logger.info("Successfully loaded document %d", i)
             except Exception as e:
-                logger.error(f"Failed to fetch document from {url}: {str(e)}")
+                logger.error("Failed to fetch document from %s: %s", url, str(e))
                 # Continue with other documents even if one fails
                 continue
 
         if not documents:
             raise ValueError("Failed to load any documents")
 
-        logger.info(f"Successfully loaded {len(documents)} documents")
+        logger.info("Successfully loaded %d documents", len(documents))
         return documents
 
     except Exception as e:
-        logger.error(f"Error loading data: {str(e)}")
+        logger.error("Error loading data: %s", str(e))
         raise
 
 
@@ -92,6 +91,9 @@ def basic_preprocessing(text: str) -> str:
     """
     Basic preprocessing of text data to remove unwanted characters and metadata.
     This includes:
+    - Removing everything before <SEC-DOCUMENT> tag
+    - Removing everything after </HTML> tag
+    - Removing all HTML tags (content between < and >)
     - Removing SEC header metadata block
     - Removing document type markers and page markers
     - Removing extra spaces, emails, apostrophes, and non-alphabet characters
@@ -104,26 +106,56 @@ def basic_preprocessing(text: str) -> str:
         str: Preprocessed text
     """
 
-    # Remove SEC header metadata block
+    # Remove everything before <SEC-DOCUMENT> tag
     text = re.sub(
-        r"Proc-Type:.*?</SEC-HEADER>", " ", text, flags=re.DOTALL | re.MULTILINE
+        r"^.*?<SEC-DOCUMENT>", "<SEC-DOCUMENT>", text, flags=re.DOTALL | re.MULTILINE
     )
 
-    # Remove document type markers and page markers
+    # Remove SEC header starting from <SEC-HEADER> metadata block until </SEC-HEADER>
     text = re.sub(
-        r"<DOCUMENT>|<TYPE>.*?</TYPE>|<SEQUENCE>.*?</SEQUENCE>|"
-        r"<DESCRIPTION>.*?</DESCRIPTION>|<TEXT>|<PAGE>",
-        " ",
-        text,
-        flags=re.DOTALL | re.MULTILINE,
+        r"<SEC-HEADER>.*?</SEC-HEADER>", "", text, flags=re.DOTALL | re.MULTILINE
     )
+
+    # First find and keep only the S-1 and S-1/A document section
+    s1_pattern = r"<DOCUMENT>(.*?<TYPE>(?:S-1|S-1/A).*?)</DOCUMENT>"
+    s1_matches = re.findall(s1_pattern, text, flags=re.DOTALL | re.MULTILINE)
+
+    if not s1_matches:
+        logger.warning("No S-1 document found")
+        return ""
+
+    # Take the first S-1 document if multiple exist
+    text = s1_matches[0]
+    # logger.info("Length of S-1 document: %d characters", len(text))
+
+    # # Remove all content between <TABLE> and </TABLE> tags
+    # text = re.sub(r"<TABLE>.*?</TABLE>", "", text, flags=re.DOTALL | re.MULTILINE)
+
+    # # Remove document type markers and page markers
+    # text = re.sub(
+    #     r"<DOCUMENT>|<TYPE>.*?</TYPE>|<SEQUENCE>.*?</SEQUENCE>|"
+    #     r"<DESCRIPTION>.*?</DESCRIPTION>|<TEXT>|<PAGE>",
+    #     " ",
+    #     text,
+    #     flags=re.DOTALL | re.MULTILINE,
+    # )
+
+    # Remove all HTML tags (content between < and >)
+    text = re.sub(r"<[^>]*>", "", text, flags=re.DOTALL | re.MULTILINE)
 
     # Standard cleaning steps
-    text = re.sub("\s+", " ", text)  # Remove extra spaces
-    text = re.sub("\S*@\S*\s?", "", text)  # Remove emails
-    text = re.sub("'", "", text)  # Remove apostrophes
-    text = re.sub("[^a-zA-Z]", " ", text)  # Remove non-alphabet characters
+    text = re.sub(r"\S*@\S*\s?", "", text)  # Remove emails
+    text = re.sub(r"'", "", text)  # Remove apostrophes
+    text = re.sub(r"&nbsp;", " ", text)  # Remove &nbsp;
+    # with open("first_document_cleaned.txt", "w", encoding="utf-8") as f:
+    #     f.write(text)
+    text = re.sub(r"[^a-zA-Z]", " ", text)  # Remove non-alphabet characters
     text = text.lower()  # Convert to lowercase
+    text = re.sub(r"\s+", " ", text)  # Remove extra spaces
+
+    # logger.info(
+    #     "Length of cleaned document after preprocessing: %d characters", len(text)
+    # )
     return text
 
 
@@ -146,13 +178,13 @@ def load_stopwords_from_file(filepath: str) -> List[str]:
             # Read words, strip whitespace, and convert to lowercase
             return [word.strip().lower() for word in file.readlines() if word.strip()]
     except FileNotFoundError:
-        logger.warning(f"Stopwords file not found: {filepath}")
+        logger.warning("Stopwords file not found: %s", filepath)
         return []
     except UnicodeDecodeError:
-        logger.error(f"Encoding error reading stopwords file: {filepath}")
+        logger.error("Encoding error reading stopwords file: %s", filepath)
         return []
     except Exception as e:
-        logger.error(f"Unexpected error reading stopwords file {filepath}: {str(e)}")
+        logger.error("Unexpected error reading stopwords file %s: %s", filepath, str(e))
         return []
 
 
@@ -195,15 +227,15 @@ def remove_stopwords(
 
 
 def lemmatization(
-    texts: List[str],
+    tokens: List[str],
     nlp,
-    allowed_postags: List[str] = ["NOUN", "ADJ", "VERB", "ADV"],
+    allowed_postags: List[str],
 ) -> List[List[str]]:
     """
     Perform lemmatization on tokenized texts using spaCy.
 
     Args:
-        texts (List[str]): List of tokenized texts (each text is a list of
+        tokens (List[str]): List of tokenized texts (each text is a list of
         words)
         nlp: spaCy language model for lemmatization
         allowed_postags (List[str]): List of allowed part-of-speech tags for
@@ -218,10 +250,10 @@ def lemmatization(
         to keep during lemmatization. By default, it includes nouns, adjectives,
         verbs, and adverbs.
     """
-    texts_out = []
-    for sent in texts:
+    tokens_out = []
+    for token_chunk in tokens:
         # Join the tokens back into text
-        full_text = " ".join(sent)
+        full_text = " ".join(token_chunk)
 
         # Split into chunks if text is too long
         chunks = split_text_into_chunks(full_text)
@@ -231,15 +263,13 @@ def lemmatization(
         for chunk in chunks:
             doc = nlp(chunk)
             processed_chunk = [
-                token.lemma_ if token.lemma_ not in ["-PRON-"] else ""
-                for token in doc
-                if token.pos_ in allowed_postags
+                token.lemma_ for token in doc if token.pos_ in allowed_postags
             ]
             processed_chunks.extend(processed_chunk)
 
-        texts_out.append(processed_chunks)
+        tokens_out.append(processed_chunks)
 
-    return texts_out
+    return tokens_out
 
 
 def remove_words_less_than_length_three_characters(
@@ -275,7 +305,7 @@ def timer_decorator(func):
         result = func(*args, **kwargs)
         end_time = time.time()
         execution_time = end_time - start_time
-        logger.info(f"{func.__name__} took {execution_time:.2f} seconds to execute")
+        logger.info("%s took %.2f seconds to execute", func.__name__, execution_time)
         return result
 
     return wrapper
@@ -302,22 +332,13 @@ def process_document_chunk(
     """
     document, stop_words, nlp = pdc_args
 
-    # Get the current process ID
-    # process_id = mp.current_process().name
-    # start_time = time.time()
-
     # Apply preprocessing steps sequentially
-    processed = basic_preprocessing(document)
-    tokens = list(sent_to_words([processed]))[0]
+    text = basic_preprocessing(document)
+    tokens = list(sent_to_words([text]))[0]
     tokens = remove_stopwords([tokens], stop_words)[0]
+    # Remove tokens that contain numbers
+    tokens = [token for token in tokens if not any(char.isdigit() for char in token)]
     tokens = remove_words_less_than_length_three_characters([tokens])[0]
-    tokens = lemmatization([tokens], nlp)[0]
-
-    # end_time = time.time()
-    # processing_time = end_time - start_time
-    # logger.info(
-    #     f"Process {process_id} finished processing in {processing_time:.2f} seconds"
-    # )
 
     return tokens
 
@@ -405,7 +426,7 @@ def analyze_corpus(
     """
     # Get vocabulary
     vocabulary = list(id2word.values())
-    logger.info(f"Total vocabulary size: {len(vocabulary)}")
+    logger.info("Total vocabulary size: %d", len(vocabulary))
 
     # Print some vocabulary statistics
     logger.info("Vocabulary Sample (first 20 words):")
@@ -415,10 +436,10 @@ def analyze_corpus(
     doc_lengths = [len(doc) for doc in bow_corpus]
     logger.info("Document length statistics:")
     logger.info(
-        f"  - Average words per document: {sum(doc_lengths)/len(doc_lengths):.2f}"
+        "  - Average words per document: %.2f", sum(doc_lengths) / len(doc_lengths)
     )
-    logger.info(f"  - Max words in a document: {max(doc_lengths)}")
-    logger.info(f"  - Min words in a document: {min(doc_lengths)}")
+    logger.info("  - Max words in a document: %d", max(doc_lengths))
+    logger.info("  - Min words in a document: %d", min(doc_lengths))
 
     # Compare BOW vs TF-IDF weights for first document
     if len(bow_corpus) > 0:
@@ -430,13 +451,13 @@ def analyze_corpus(
         bow_sorted = sorted(bow_doc, key=lambda x: x[1], reverse=True)[:num_words]
         tfidf_sorted = sorted(tfidf_doc, key=lambda x: x[1], reverse=True)[:num_words]
 
-        logger.info(f"Top {num_words} words by frequency (BOW):")
+        logger.info("Top %d words by frequency (BOW):", num_words)
         for word_id, freq in bow_sorted:
-            logger.info(f"  - {id2word[word_id]}: {freq}")
+            logger.info("  - %s: %d", id2word[word_id], freq)
 
-        logger.info(f"Top {num_words} words by TF-IDF weight:")
+        logger.info("Top %d words by TF-IDF weight:", num_words)
         for word_id, weight in tfidf_sorted:
-            logger.info(f"  - {id2word[word_id]}: {weight:.3f}")
+            logger.info("  - %s: %.3f", id2word[word_id], weight)
 
 
 def check_vocabulary(
@@ -453,21 +474,55 @@ def check_vocabulary(
     Returns:
         None
     """
-    print("\nDebug: Vocabulary Check")
-    print(f"Vocabulary size: {len(id2word)}")
-    print("Sample of vocabulary (first 10 words):", list(id2word.values())[:10])
+    logger.info("\nDebug: Vocabulary Check")
+    logger.info("Vocabulary size: %d", len(id2word))
+    logger.info(
+        "Sample of vocabulary (first 10 words): %s", list(id2word.values())[:10]
+    )
 
-    print("\nDebug: Processed Texts Check")
-    print(f"Number of documents: {len(texts)}")
+    logger.info("\nDebug: Processed Texts Check")
+    logger.info("Number of documents: %d", len(texts))
     if texts:
-        print(f"First document length: {len(texts[0])}")
-        print("Sample of first document (first 10 words):", texts[0][:10])
+        logger.info("First document length: %d", len(texts[0]))
+        logger.info("Sample of first document (first 10 words): %s", texts[0][:10])
+
+
+def pre_processing_helper(
+    texts: List[List[str]],
+) -> Tuple[
+    corpora.Dictionary,  # dictionary
+    List[List[Tuple[int, int]]],  # bow_corpus
+    List[List[Tuple[int, float]]],  # tfidf_corpus
+]:
+    # Create Dictionary - mapping of unique ids to words in the documents
+    dic = corpora.Dictionary(texts)
+
+    bc = [dic.doc2bow(text) for text in texts]
+
+    # Create Tf-IDF model
+    tfidf = models.TfidfModel(
+        corpus=bc,
+        id2word=dic,
+    )
+
+    # Apply TF-IDF transformation to the corpus
+    tfc = tfidf[bc]
+    del tfidf
+
+    logger.info("Number of unique tokens: %d", len(dic))
+
+    return (
+        dic,
+        bc,
+        tfc,
+    )
 
 
 @timer_decorator
 def pre_processing_gensim(
-    documents: List[str],
-    config: Dict = None,
+    documents_generator: Iterator[List[str]],
+    num_cores: int,
+    config: Dict,
 ) -> Tuple[
     Dict[int, str],
     List[List[str]],
@@ -478,7 +533,8 @@ def pre_processing_gensim(
     Preprocess documents based on model type and configuration.
 
     Args:
-        documents (List[str]): List of documents to process
+        documents_generator (Iterator[List[str]]): Iterator of document batches
+        num_cores (int): Number of CPU cores to use
         config (Dict): Configuration dictionary from YAML
 
     Returns:
@@ -489,220 +545,241 @@ def pre_processing_gensim(
         - tfidf_corpus (List[List[Tuple[int, float]]]): TF-IDF corpus
     """
 
-    start_time = datetime.now()
-    num_cores = min(8, mp.cpu_count())
-    logger.info(f"Starting preprocessing at {start_time}")
-    logger.info(f"Number of CPU cores available: {num_cores}")
-    logger.info(f"Number of documents to process: {len(documents)}")
+    num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
 
     # Get base stopwords from NLTK
     stop_words = set(stopwords.words("english"))
 
     # Define paths to additional stopwords files
     stopwords_files = [
+        "stopwords/additional_stopwords.txt",
         "stopwords/financial_stopwords.txt",
         "stopwords/generic_stopwords.txt",
     ]
 
     # Add domain-specific stopwords from files
     for stopwords_file in stopwords_files:
-        additional_stopwords = load_stopwords_from_file(stopwords_file)
-        stop_words.update(additional_stopwords)
-        logger.info(
-            f"Added {len(additional_stopwords)} stopwords from {stopwords_file}"
-        )
+        try:
+            additional_stopwords = load_stopwords_from_file(stopwords_file)
+            stop_words.update(additional_stopwords)
+            logger.info(
+                "Added %d stopwords from %s", len(additional_stopwords), stopwords_file
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not load stopwords from %s: %s", stopwords_file, str(e)
+            )
 
-    logger.info(f"Total number of stopwords: {len(stop_words)}")
+    logger.info("Total number of stopwords: %d", len(stop_words))
 
     # Load the spacy (en_core_web_sm): small English pipeline
     # trained on written web text (blogs, news, comments), that includes
     # vocabulary, syntax and entities.
-    nlp = spacy.load(
-        config.get("spacy_model", "en_core_web_sm"),
-        disable=config.get("spacy_disabled", ["parser", "ner"]),
-    )
-    # nlp.max_length = 2000000  # 1158674
-
-    if not documents or len(documents) == 0:
-        raise ValueError("Empty document list provided")
+    try:
+        nlp = spacy.load(
+            config.get("spacy_model", "en_core_web_sm"),
+            disable=config.get("spacy_disabled", ["parser", "ner"]),
+        )
+    except Exception as e:
+        logger.error("Failed to load spacy model: %s", str(e))
+        raise
 
     logger.info("Pre-processing the documents")
 
-    # Prepare arguments for parallel processing
-    process_args = [(doc, stop_words, nlp) for doc in documents]
+    all_bow_corpus = []
+    all_tfidf_corpus = []
+    all_texts = []
 
-    # Use ProcessPoolExecutor for CPU-bound preprocessing
-    parallel_start = time.time()
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        # processed_data = list(executor.map(process_document_chunk, process_args))
-        processed_data = process_map(
-            process_document_chunk,
-            process_args,
-            max_workers=num_cores,
-            desc="Processing documents",
-            chunksize=1,
+    # Check if the generator is empty
+    empty_generator = True
+    for batch_documents in documents_generator:
+        empty_generator = False
+        if not batch_documents:
+            logger.warning("Empty batch received, skipping")
+            continue
+
+        # Prepare arguments for parallel processing
+        process_args = [(doc, stop_words, nlp) for doc in batch_documents]
+
+        # Use ProcessPoolExecutor for CPU-bound preprocessing
+        parallel_start = time.time()
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            # processed_data = list(executor.map(process_document_chunk, process_args))
+            processed_batch = process_map(
+                process_document_chunk,
+                process_args,
+                max_workers=num_cores,
+                desc="Processing documents",
+                chunksize=1,
+            )
+        parallel_end = time.time()
+        logger.info(
+            "Completed parallel preprocessing of %d documents",
+            len(processed_batch),
         )
-    parallel_end = time.time()
-    logger.info(f"Completed parallel preprocessing of {len(processed_data)} documents")
 
-    parallel_time = parallel_end - parallel_start
-    logger.info(f"Parallel processing completed in {parallel_time:.2f} seconds")
-    logger.info(
-        f"Average time per document: {parallel_time/len(documents):.2f} seconds"
+        parallel_time = parallel_end - parallel_start
+        logger.info(
+            "Parallel processing completed in %.2f seconds",
+            parallel_time,
+        )
+        logger.info(
+            "Average time per document: %.2f seconds",
+            parallel_time / len(batch_documents),
+        )
+
+        # 6. Build the bigram and trigram models
+        bigram = models.Phrases(
+            processed_batch,
+            min_count=5,
+            threshold=200,
+        )  # higher threshold fewer phrases.
+        trigram = models.Phrases(
+            bigram[processed_batch],
+            threshold=200,
+        )
+
+        # Faster way to get a sentence clubbed as a trigram/bigram
+        bigram_mod = models.phrases.Phraser(bigram)
+        trigram_mod = models.phrases.Phraser(trigram)
+
+        # Form Bigrams
+        batch_bigrams = make_bigrams(processed_batch, bigram_mod)
+        batch_bigrams_trigrams = make_trigrams(
+            batch_bigrams,
+            trigram_mod,
+            bigram_mod,
+        )
+
+        # Lemmatize the tokens
+        data_lemmatized = lemmatization(
+            batch_bigrams_trigrams,
+            nlp,
+            allowed_postags=config.get(
+                "allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]
+            ),
+        )
+
+        all_texts.extend(data_lemmatized)
+
+        del bigram
+        del bigram_mod
+        del batch_bigrams
+        del batch_bigrams_trigrams
+        del data_lemmatized
+        del processed_batch
+        del trigram
+        del trigram_mod
+
+    if empty_generator:
+        logger.error("No documents were provided for processing")
+        # Return empty structures to avoid errors downstream
+        return (
+            corpora.Dictionary(),
+            [],
+            [],
+            [],
+        )
+
+    if not all_texts:
+        logger.error("No valid documents were processed")
+        # Return empty structures to avoid errors downstream
+        return (
+            corpora.Dictionary(),
+            [],
+            [],
+            [],
+        )
+
+    dictionary_gensim, bow_corpus_gensim, tfidf_corpus_gensim = pre_processing_helper(
+        all_texts,
     )
-
-    # 6. Build the bigram and trigram models
-    bigram = models.Phrases(
-        processed_data,
-        min_count=5,
-        threshold=200,
-    )  # higher threshold fewer phrases.
-    trigram = models.Phrases(
-        bigram[processed_data],
-        threshold=200,
-    )
-
-    # Faster way to get a sentence clubbed as a trigram/bigram
-    bigram_mod = models.phrases.Phraser(bigram)
-    trigram_mod = models.phrases.Phraser(trigram)
-
-    # Form Bigrams
-    data_bigrams = make_bigrams(processed_data, bigram_mod)
-    data_bigrams_trigrams = make_trigrams(
-        data_bigrams,
-        trigram_mod,
-        bigram_mod,
-    )
-    logger.info(f"Number of documents after tokenization: {len(data_bigrams_trigrams)}")
-
-    # Create Dictionary - mapping of unique ids to words in the documents
-    id2word = corpora.Dictionary(data_bigrams_trigrams)
-
-    # Create Corpus - bag of words
-    texts = data_bigrams_trigrams
-
-    bow_corpus = [id2word.doc2bow(text) for text in texts]
-
-    # Create Tf-IDF model
-    tfidf = models.TfidfModel(bow_corpus)
-
-    # Apply TF-IDF transformation to the corpus
-    tfidf_corpus = tfidf[bow_corpus]
 
     if config.get("debug", "enabled") is True:
-        check_vocabulary(id2word, texts)
-        analyze_corpus(id2word, bow_corpus, tfidf_corpus)
+        check_vocabulary(dictionary_gensim, all_texts)
+        analyze_corpus(dictionary_gensim, bow_corpus_gensim, tfidf_corpus_gensim)
 
     return (
-        id2word,
-        texts,
-        bow_corpus,
-        tfidf_corpus,
+        dictionary_gensim,
+        bow_corpus_gensim,
+        tfidf_corpus_gensim,
+        all_texts,
     )
 
 
-@timer_decorator
-def pre_processing_sklearn(
-    documents: List[str],
-    config: Dict = None,
-) -> Tuple[List[str], TfidfVectorizer, np.ndarray]:
+def filter_corpus_by_tfidf(
+    corpus: List[List[Tuple[int, float]]],
+    dictionary: corpora.Dictionary,
+    low_value_threshold: float = 0.025,
+) -> Tuple[List[List[Tuple[int, float]]], corpora.Dictionary]:
     """
-    Preprocess documents for sklearn LDA model.
+    Filter corpus based on TF-IDF scores and remove missing words.
 
     Args:
-        documents (List[str]): List of documents to process
-        config (Dict): Configuration dictionary from YAML
+        corpus: List of documents in bow format
+        dictionary: Gensim dictionary mapping word IDs to words
+        low_value_threshold: Minimum TF-IDF value to keep a term (default: 0.025)
 
     Returns:
-        vectorizer (CountVectorizer): Fitted CountVectorizer object
-        processed_texts (List[str]): List of preprocessed document texts
-        tfidf_vectorizer (TfidfVectorizer): Fitted TfidfVectorizer object
-        tfidf_matrix (np.ndarray): TF-IDF matrix of the documents
+        Tuple containing:
+        - Filtered corpus
+        - Updated dictionary with only retained terms
     """
-    start_time = datetime.now()
-    num_cores = min(8, mp.cpu_count())
-    logger.info(f"Starting preprocessing at {start_time}")
-    logger.info(f"Number of CPU cores available: {num_cores}")
-    logger.info(f"Number of documents to process: {len(documents)}")
-
-    # Get base stopwords from NLTK
-    stop_words = set(stopwords.words("english"))
-
-    # Add domain-specific stopwords
-    stopwords_files = [
-        "stopwords/financial_stopwords.txt",
-        "stopwords/generic_stopwords.txt",
-    ]
-    for stopwords_file in stopwords_files:
-        additional_stopwords = load_stopwords_from_file(stopwords_file)
-        stop_words.update(additional_stopwords)
-        logger.info(
-            f"Added {len(additional_stopwords)} stopwords from {stopwords_file}"
+    # Check if dictionary is empty
+    if not dictionary or len(dictionary) == 0:
+        logger.warning(
+            "Empty dictionary provided. Returning empty corpus and dictionary."
         )
+        return [], corpora.Dictionary()
 
-    logger.info(f"Total number of stopwords: {len(stop_words)}")
+    # Create TF-IDF model
+    tfidf_model = models.TfidfModel(corpus=corpus, id2word=dictionary)
 
-    # Load spacy for lemmatization
-    nlp = spacy.load(
-        config.get("spacy_model", "en_core_web_sm"),
-        disable=config.get("spacy_disabled", ["parser", "ner"]),
+    # Track which terms are retained
+    retained_term_ids = set()
+    filtered_corpus = []
+
+    # Process each document
+    for bow in corpus:
+        # Get TF-IDF scores for this document
+        tfidf_scores = dict(tfidf_model[bow])
+
+        # Filter terms based on conditions:
+        # 1. Term must have TF-IDF score above threshold
+        # 2. Term must exist in TF-IDF model
+        new_bow = [
+            (term_id, freq)
+            for term_id, freq in bow
+            if term_id in tfidf_scores and tfidf_scores[term_id] >= low_value_threshold
+        ]
+
+        # Add retained terms to tracking set
+        retained_term_ids.update(term_id for term_id, _ in new_bow)
+        filtered_corpus.append(new_bow)
+
+    # Create new dictionary with only retained terms
+    new_dictionary = corpora.Dictionary()
+    for term_id in retained_term_ids:
+        if term_id in dictionary.id2token:
+            token = dictionary.id2token[term_id]
+            new_dictionary.doc2bow([token], allow_update=True)
+
+    # Print statistics
+    initial_terms = len(dictionary)
+    final_terms = len(new_dictionary)
+    removed_terms = initial_terms - final_terms
+
+    # Only calculate percentage if initial_terms is not zero
+    percentage_removed = (
+        (removed_terms / initial_terms) * 100 if initial_terms > 0 else 0
     )
 
-    if not documents or len(documents) == 0:
-        raise ValueError("Empty document list provided")
+    logger.info("\nFiltering Statistics:")
+    logger.info(f"Initial vocabulary size: {initial_terms}")
+    logger.info(f"Terms removed: {removed_terms} ({percentage_removed:.1f}%)")
+    logger.info(f"Final vocabulary size: {final_terms}")
 
-    # Parallel document processing
-    process_args = [(doc, stop_words, nlp) for doc in documents]
-    parallel_start = time.time()
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        processed_data = process_map(
-            process_document_chunk,
-            process_args,
-            max_workers=num_cores,
-            desc="Processing documents",
-            chunksize=1,
-        )
-    parallel_end = time.time()
-
-    # Join tokens back into text for sklearn vectorizers
-    processed_texts = [" ".join(doc) for doc in processed_data]
-
-    # Create and fit CountVectorizer
-    # ngram_range=(1,3) captures unigrams, bigrams, and trigrams
-    count_vectorizer = CountVectorizer(
-        min_df=0.01,  # 1% of the documents should contain the word
-        max_df=0.95,  # 95% of the documents should contain the word
-        # ngram_range=(1, 3),  # Include unigrams, bigrams, and trigrams
-        stop_words=list(stop_words),  # Pass our combined stopwords
-        # token_pattern=r"(?u)\b\w+\b",  # Match any word character
-        # max_features=config.get("max_features", None),  # Optional vocab size limit
-    )
-
-    # Create document-term matrix and fit the vectorizer
-    bow_matrix = count_vectorizer.fit_transform(processed_texts)
-
-    # Create TF-IDF transformer and transform bow_matrix
-    tfidf_vectorizer = TfidfVectorizer(
-        vocabulary=count_vectorizer.vocabulary_,  # Now vocabulary_ exists after fitting
-        use_idf=True,  # Use IDF weights for scaling
-        smooth_idf=True,  # Smooth the IDF weights to avoid zero values
-        sublinear_tf=True,  # Apply sublinear scaling to term frequencies
-    )
-    tfidf_matrix = tfidf_vectorizer.fit_transform(processed_texts)
-
-    if config.get("debug", "enabled") is True:
-        # Debug information about the matrices
-        logger.info(f"Vocabulary size: {len(count_vectorizer.vocabulary_)}")
-        logger.info(f"Document-term matrix shape: {bow_matrix.shape}")
-        logger.info(f"TF-IDF matrix shape: {tfidf_matrix.shape}")
-
-    del count_vectorizer  # Free up memory
-
-    return (
-        processed_texts,
-        tfidf_vectorizer,
-        tfidf_matrix,
-    )
+    return filtered_corpus, new_dictionary
 
 
 if __name__ == "__main__":
@@ -714,15 +791,50 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data",
-        required=True,
+        required=False,
+        default="data_url_csv.txt",
         help="Path to input text document",
+    )
+    parser.add_argument(
+        "-n",
+        "--num_docs",
+        type=int,
+        required=True,
+        help="""How many documents to run the topic modeling on. If running for
+        less documents, mention the exact number. If want to run for all
+        documents, enter 0""",
+    )
+    parser.add_argument(
+        "-nc",
+        "--num_cores",
+        type=int,
+        required=False,
+        default=16,
+        help="Minimum number of cores to run the topic modeling on. If not provided, the number of cores will be determined automatically.",
+    )
+    parser.add_argument(
+        "-b",
+        "--batch_size",
+        type=int,
+        required=False,
+        default=100,
+        help="Number of documents to process in each batch. If not provided, the batch size will be 100.",
     )
     args = parser.parse_args()
 
     # Load configuration
     config = load_config(args.config)
-    documents = load_data(args.data)
-    id2word, texts, bow_corpus, tfidf_corpus = pre_processing_gensim(
-        documents,
+    documents_generator = utils.load_files_in_batches(
+        batch_size=args.batch_size,
+        num_docs=args.num_docs,
+    )
+    (
+        dictionary,
+        bow_corpus,
+        tfidf_corpus,
+        all_texts,
+    ) = pre_processing_gensim(
+        documents_generator,
+        num_cores=args.num_cores,
         config=config["preprocessing"],
     )

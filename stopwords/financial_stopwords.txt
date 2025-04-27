@@ -27,3 +27,9 @@ year
 date
 determine
 customer
+base
+financial
+increase
+income
+value
+offer
