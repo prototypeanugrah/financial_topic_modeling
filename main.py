@@ -1,10 +1,5 @@
 import argparse
 import logging
-import os
-import sys
-
-import matplotlib.pyplot as plt
-import numpy as np
 
 from visualizing_wordcloud import visualize_wordcloud
 import data_preprocessing
@@ -14,7 +9,6 @@ import utils
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
     level=logging.INFO,
-    # format="%(message)s",  # Simplified format
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logging.getLogger("gensim").setLevel(logging.ERROR)  # For gensim
@@ -30,13 +24,6 @@ def main():
         help="Path to configuration file",
     )
     parser.add_argument(
-        "-d",
-        "--data",
-        required=False,
-        default="data_url_csv.txt",
-        help="Path to input text document",
-    )
-    parser.add_argument(
         "-n",
         "--num_docs",
         type=int,
@@ -45,13 +32,13 @@ def main():
         less documents, mention the exact number. If want to run for all
         documents, enter 0""",
     )
-    # parser.add_argument(
-    #     "-k",
-    #     "--num_topics",
-    #     type=int,
-    #     required=False,
-    #     help="Number of topics to run the topic modeling on. If not provided, the number of topics will be determined automatically.",
-    # )
+    parser.add_argument(
+        "-k",
+        "--num_topics",
+        type=int,
+        required=False,
+        help="Number of topics to run the topic modeling on. If not provided, the number of topics will be determined automatically.",
+    )
     parser.add_argument(
         "-nc",
         "--num_cores",
@@ -67,6 +54,14 @@ def main():
         required=False,
         default=100,
         help="Number of documents to process in each batch. If not provided, the batch size will be 15.",
+    )
+    parser.add_argument(
+        "-t",
+        "--test_perc",
+        type=float,
+        required=False,
+        default=0.1,
+        help="Percentage of documents to use for testing. If not provided, the test percentage will be 20%.",
     )
     args = parser.parse_args()
 
@@ -86,41 +81,61 @@ def main():
         logger.info("Results will be saved to %s", output_dir)
 
         # Load data
-        # documents = utils.load_data(args.data, args.num_docs)
-        # documents = utils.load_files(num_files=args.num_docs)
-        documents_generator = utils.load_files_in_batches(
-            batch_size=batch_size,
-            num_docs=args.num_docs,
+        train_documents_generator, test_documents_generator = (
+            utils.load_files_in_batches(
+                batch_size=batch_size,
+                num_docs=args.num_docs,
+                test_perc=args.test_perc,
+            )
         )
 
         # documents = [document]
 
         # -------- Preprocess data --------
         logger.info("Starting preprocessing")
-        dictionary, bow_corpus, tfidf_corpus, texts = (
+        train_dictionary, train_bow_corpus, train_tfidf_corpus, train_texts = (
             data_preprocessing.pre_processing_gensim(
-                documents_generator=documents_generator,
+                documents_generator=train_documents_generator,
                 config=config["preprocessing"],
                 num_cores=args.num_cores,
+                mode="train",
             )
+        )
+        _, _, _, test_texts = data_preprocessing.pre_processing_gensim(
+            documents_generator=test_documents_generator,
+            config=config["preprocessing"],
+            num_cores=args.num_cores,
+            mode="test",
+        )
+
+        (
+            test_bow_corpus,
+            test_tfidf_corpus,
+        ) = data_preprocessing.test_corpus_filtering(
+            dic=train_dictionary,
+            test_texts=test_texts,
         )
 
         # -------- Train model if optimize_topics is True --------
         if config["lda"]["optimize_topics"]:
             logger.info("Starting topic optimization")
             models, perplexity_scores = lda_model_gensim.optimize_topic_number(
-                tfidf_corpus,
-                dictionary,
-                bow_corpus,
-                config["lda"]["topic_range"],
-                config["lda"]["gensim"],
+                # train_corpus=train_tfidf_corpus,
+                train_corpus=train_bow_corpus,
+                id2word=train_dictionary,
+                texts=train_texts,
+                topic_range=config["lda"]["topic_range"],
+                model_params=config["lda"]["gensim"],
+                # test_corpus=test_tfidf_corpus,
+                test_corpus=test_bow_corpus,
+                num_cores=args.num_cores,
             )
-            best_idx = perplexity_scores.index(min(perplexity_scores))
-            best_num_topics = config["lda"]["topic_range"]["start"] + (
-                best_idx * config["lda"]["topic_range"]["step"]
+            best_topic_num_idx = perplexity_scores.index(min(perplexity_scores))
+            best_topic_num = config["lda"]["topic_range"]["start"] + (
+                best_topic_num_idx * config["lda"]["topic_range"]["step"]
             )
-            topic_model = models[best_idx]
-            logger.info("Best number of topics: %s", best_num_topics)
+            topic_model = models[best_topic_num_idx]
+            logger.info("Best number of topics: %s", best_topic_num)
             # Save topic numbers and perplexity scores
             utils.save_topic_perplexity_scores(
                 config["lda"]["topic_range"],
@@ -133,33 +148,48 @@ def main():
                 config["lda"]["topic_range"],
                 perplexity_scores,
                 output_dir,
+                mode="test",
             )
 
-        else:
+        elif args.num_topics:
             logger.info(
-                f"Training LDA model with gensim with {config['lda']['gensim']['num_topics']} topics"
+                "Training LDA model with gensim with %s topics",
+                args.num_topics,
             )
             topic_model = lda_model_gensim.model_training(
-                config["lda"]["gensim"]["num_topics"],
-                # tfidf_corpus,
-                bow_corpus,
-                dictionary,
-                config["lda"]["gensim"],
+                topic_num=args.num_topics,
+                corpus=train_tfidf_corpus,
+                # corpus=train_bow_corpus,
+                id2word=train_dictionary,
+                model_params=config["lda"]["gensim"],
             )
+        else:
+            raise ValueError("No topic number provided")
 
         # -------- Compute metrics --------
         perf_metrics = {}
-        logger.info("Computing model performance metrics using gensim")
-        perplexity, coherence_metrics = lda_model_gensim.performance_metrics(
-            topic_model,
-            # tfidf_corpus,
-            bow_corpus,
-            texts,
-            dictionary,
+        logger.info("Computing model performance metrics for train set")
+        perplexity = lda_model_gensim.performance_metrics(
+            model=topic_model,
+            # corpus=train_tfidf_corpus,
+            corpus=train_bow_corpus,
+            texts=train_texts,
+            id2word=train_dictionary,
         )
-        perf_metrics = {
+        perf_metrics["train"] = {
             "perplexity": perplexity,
-            "coherence_metrics": coherence_metrics,
+        }
+
+        logger.info("Computing model performance metrics for test set")
+        perplexity = lda_model_gensim.performance_metrics(
+            model=topic_model,
+            # corpus=test_tfidf_corpus,
+            corpus=test_bow_corpus,
+            texts=test_texts,
+            id2word=train_dictionary,
+        )
+        perf_metrics["test"] = {
+            "perplexity": perplexity,
         }
 
         # Save results

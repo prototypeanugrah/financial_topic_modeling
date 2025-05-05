@@ -15,10 +15,12 @@ import multiprocessing as mp
 import time
 import yaml
 
+from gensim.test import utils
+from tqdm import tqdm
 import requests
 import matplotlib.pyplot as plt
 import re
-from tqdm import tqdm
+import random
 
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
@@ -243,18 +245,16 @@ def load_data_sequential(
 def save_model_results(
     output_dir: Path,
     lda_model: Any,
-    perf_metrics: Dict,
+    perf_metrics: Dict[str, Dict],
     config: Dict,
 ) -> None:
     """Save model results and metrics."""
     if config["output"]["save_metrics"]:
         metrics = {
-            "perplexity": float(
-                perf_metrics["perplexity"]
-            ),  # Convert to native Python float
-            "coherence_metrics": {
-                k: float(v) for k, v in perf_metrics["coherence_metrics"].items()
-            },  # Convert each metric
+            "perplexity": {
+                "train": float(perf_metrics["train"]["perplexity"]),
+                "test": float(perf_metrics["test"]["perplexity"]),
+            },
             "config": config,
         }
 
@@ -264,18 +264,22 @@ def save_model_results(
     if config["output"]["save_model"]:
         # Save model topics
         with open(output_dir / "topics.txt", "w", encoding="utf-8") as f:
-            topics = lda_model.print_topics()
+            # Get the number of topics from the model
+            num_topics = lda_model.num_topics
+            # Print all topics
+            topics = lda_model.print_topics(num_topics=num_topics)
             for topic in topics:
                 f.write(f"{topic}\n")
 
         # Save model
-        # lda_model.save(str(output_dir / "lda_model"))
+        lda_model.save(str(output_dir / "lda_model"))
 
 
 def plot_perplexity_scores(
     topic_range: Dict,
     perplexity_scores: List[float],
     output_dir: Path,
+    mode: str,
 ) -> None:
     """
     Plot and save perplexity scores vs number of topics.
@@ -300,9 +304,9 @@ def plot_perplexity_scores(
     )
     plt.xlabel("Number of Topics")
     plt.ylabel("Perplexity Score")
-    plt.title("Perplexity Score vs Number of Topics")
+    plt.title(f"Perplexity Score vs Number of Topics ({mode})")
     plt.grid(True)
-    plt.savefig(output_dir / "perplexity_plot.png")
+    plt.savefig(output_dir / f"perplexity_plot_{mode}.png")
     plt.close()
 
 
@@ -473,27 +477,29 @@ def load_files(
 
 def load_files_in_batches(
     batch_size: int,
+    test_perc: float,
     num_docs: int = 0,
     input_dir: str = "raw_data_files",
-) -> Iterator[List[str]]:
+) -> Tuple[Iterator[List[str]], Iterator[List[str]]]:
     """
-    Generator function to load files in batches
+    Generator function to load files in batches with train-test split
 
     Args:
-        input_dir: Directory containing the saved files
         batch_size: Number of files to load in each batch
+        test_perc: Percentage of files to use for testing (0.0 to 1.0)
+        num_docs: Number of files to load (0 for all files)
+        input_dir: Directory containing the saved files
 
     Returns:
-        Iterator of lists of document texts
+        Tuple of (train_batches_iterator, test_batches_iterator)
     """
     input_path = Path(input_dir)
     files = list(input_path.glob("*.txt"))
 
     if not files:
         logger.error("No .txt files found in directory: %s", input_dir)
-        # Yield an empty list to avoid errors downstream
-        yield []
-        return
+        # Yield empty iterators to avoid errors downstream
+        return iter([]), iter([])
 
     logger.info("Found %d .txt files in directory: %s", len(files), input_dir)
 
@@ -501,75 +507,44 @@ def load_files_in_batches(
         files = files[:num_docs]
         logger.info("Using %d files for processing", len(files))
 
-    for i in range(0, len(files), batch_size):
-        batch_files = files[i : i + batch_size]
-        batch_documents = []
-        for file_path in batch_files:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    if content.strip():  # Only add non-empty documents
-                        batch_documents.append(content)
-                    else:
-                        logger.warning("Empty file found: %s", file_path)
-            except Exception as e:
-                logger.error("Error loading %s: %s", file_path, str(e))
+    # Shuffle files for random train-test split
+    random.shuffle(files)
 
-        if batch_documents:  # Only yield batches with documents
-            yield batch_documents
-        else:
-            logger.warning("No valid documents in batch %d-%d", i, i + batch_size)
-            # Yield an empty list to maintain the generator pattern
-            yield []
+    # Calculate split point
+    split_idx = int(len(files) * (1 - test_perc))
+    train_files = files[:split_idx]
+    test_files = files[split_idx:]
 
-
-def plot_ideal_topic_number(
-    num_topics: List[int],
-    mean_stabilities: List[float],
-    coherences: List[float],
-    ideal_topic_num: int,
-) -> None:
-    """
-    Plot the ideal topic number and the metrics per number of topics.
-
-    Args:
-        num_topics (List[int]): List of topic numbers
-        mean_stabilities (List[float]): List of mean stability scores
-        coherences (List[float]): List of coherence scores
-        ideal_topic_num (int): Ideal number of topics
-    """
-    plt.figure(figsize=(20, 10))
-    ax = sns.lineplot(
-        x=num_topics[:-1],
-        y=mean_stabilities,
-        label="Average Topic Overlap",
-    )
-    ax = sns.lineplot(
-        x=num_topics[:-1],
-        y=coherences,
-        label="Topic Coherence",
+    logger.info(
+        "Split into %d training and %d test files",
+        len(train_files),
+        len(test_files),
     )
 
-    ax.axvline(
-        x=ideal_topic_num,
-        label="Ideal Number of Topics",
-        color="black",
-    )
-    ax.axvspan(
-        xmin=ideal_topic_num - 1,
-        xmax=ideal_topic_num + 1,
-        alpha=0.5,
-        facecolor="grey",
-    )
+    def batch_generator(file_list: List[Path]) -> Iterator[List[str]]:
+        for i in range(0, len(file_list), batch_size):
+            batch_files = file_list[i : i + batch_size]
+            batch_documents = []
+            for file_path in batch_files:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        if content.strip():  # Only add non-empty documents
+                            batch_documents.append(content)
+                        else:
+                            logger.warning("Empty file found: %s", file_path)
+                except Exception as e:
+                    logger.error("Error loading %s: %s", file_path, str(e))
 
-    y_max = max(max(mean_stabilities), max(coherences)) + (
-        0.10 * max(max(mean_stabilities), max(coherences))
-    )
-    ax.set_ylim([0, y_max])
-    ax.set_xlim([1, num_topics[-1] - 1])
+            if batch_documents:  # Only yield batches with documents
+                yield batch_documents
+            else:
+                logger.warning(
+                    "No valid documents in batch %d-%d",
+                    i,
+                    i + batch_size,
+                )
+                # Yield an empty list to maintain the generator pattern
+                yield []
 
-    ax.axes.set_title("Model Metrics per Number of Topics", fontsize=25)
-    ax.set_ylabel("Metric Level", fontsize=20)
-    ax.set_xlabel("Number of Topics", fontsize=20)
-    plt.legend(fontsize=20)
-    plt.show()
+    return batch_generator(train_files), batch_generator(test_files)

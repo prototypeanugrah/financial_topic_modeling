@@ -1,9 +1,9 @@
 # Data preprocessing settings
 preprocessing:
   tfidf_filtering:
-    - enabled: true
-    - threshold: 0.01
-    - remove_missing_words: true
+    enabled: true
+    threshold: 0.01
+    remove_missing_words: true
   model_type: lda
   vectorizer:
     - min_df: 3
@@ -25,20 +25,20 @@ preprocessing:
 
 # LDA model settings
 lda:
-  optimize_topics: false
+  optimize_topics: true
   topic_range:
-    start: 2
-    limit: 120
-    step: 5
+    start: 1
+    limit: 200
+    step: 10
   gensim:
-    num_topics: 10
     random_state: 100
     update_every: 1
-    chunksize: 100
+    chunksize: 1000
+    iterations: 400
     passes: 20
     alpha: auto
     eta: auto
-    per_word_topics: true
+    per_word_topics: false
   sklearn:
     n_components: 20
     max_iter: 25

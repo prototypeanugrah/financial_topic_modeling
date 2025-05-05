@@ -1,9 +1,16 @@
+"""
+
+This script is used to preprocess the text data for the LDA topic modeling.
+
+"""
+
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from typing import Tuple, Dict, List, Any, Iterator
 import argparse
 import logging
 import multiprocessing as mp
+import os
 import requests
 import time
 import yaml
@@ -23,79 +30,15 @@ import utils
 logger = logging.getLogger(__name__)
 
 
-def load_data(
-    data_path: str,
-    num_docs: int = 5,
-) -> List[str]:
-    """
-    Load and prepare text documents from the first num_docs URLs listed in the file.
-
-    Args:
-        data_path: Path to file containing URLs
-        num_docs: Number of documents to load (default: 5)
-
-    Returns:
-        List of document texts
-    """
-    try:
-        logger.info("Loading first %d URLs from %s", num_docs, data_path)
-        documents = []
-
-        with open(data_path, "r", encoding="utf-8") as f:
-            # Get first num_docs non-empty lines
-            urls = [line.strip() for line in f if line.strip()][:num_docs]
-
-        if not urls:
-            raise ValueError(f"No URLs found in {data_path}")
-
-        logger.info("Found %d URLs to process", len(urls))
-
-        # SEC specific headers with email identification
-        headers = {
-            "User-Agent": "Sample Company Name AdminContact@company.com",
-            "Host": "www.sec.gov",
-        }
-
-        # Fetch each document
-        for i, url in enumerate(urls, 1):
-            try:
-                logger.info("Fetching document %d from %s", i, url)
-                response = requests.get(url, headers=headers)
-                response.raise_for_status()  # Raise exception for bad status codes
-                documents.append(response.text)
-                logger.info("Successfully loaded document %d", i)
-            except Exception as e:
-                logger.error("Failed to fetch document from %s: %s", url, str(e))
-                # Continue with other documents even if one fails
-                continue
-
-        if not documents:
-            raise ValueError("Failed to load any documents")
-
-        logger.info("Successfully loaded %d documents", len(documents))
-        return documents
-
-    except Exception as e:
-        logger.error("Error loading data: %s", str(e))
-        raise
-
-
-def load_config(config_path: str) -> Dict[str, Any]:
-    """Load configuration from YAML file."""
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
 # Preprocess the text data
 def basic_preprocessing(text: str) -> str:
     """
     Basic preprocessing of text data to remove unwanted characters and metadata.
     This includes:
     - Removing everything before <SEC-DOCUMENT> tag
-    - Removing everything after </HTML> tag
-    - Removing all HTML tags (content between < and >)
     - Removing SEC header metadata block
-    - Removing document type markers and page markers
+    - Keeping only the S-1 and S-1/A document section
+    - Removing all HTML tags (content between < and >)
     - Removing extra spaces, emails, apostrophes, and non-alphabet characters
     - Converting text to lowercase
 
@@ -126,7 +69,6 @@ def basic_preprocessing(text: str) -> str:
 
     # Take the first S-1 document if multiple exist
     text = s1_matches[0]
-    # logger.info("Length of S-1 document: %d characters", len(text))
 
     # # Remove all content between <TABLE> and </TABLE> tags
     # text = re.sub(r"<TABLE>.*?</TABLE>", "", text, flags=re.DOTALL | re.MULTILINE)
@@ -153,9 +95,6 @@ def basic_preprocessing(text: str) -> str:
     text = text.lower()  # Convert to lowercase
     text = re.sub(r"\s+", " ", text)  # Remove extra spaces
 
-    # logger.info(
-    #     "Length of cleaned document after preprocessing: %d characters", len(text)
-    # )
     return text
 
 
@@ -205,25 +144,20 @@ def sent_to_words(sentences: List[str]) -> Iterator[List[str]]:
 
 
 def remove_stopwords(
-    texts: List[str],
+    texts: List[List[str]],
     stop_words: List[str],
 ) -> List[List[str]]:
     """
     Remove stopwords from tokenized texts.
 
     Args:
-        texts (List[str]): List of tokenized texts (each text is a list of
-        words)
+        texts (List[List[str]]): List of tokenized texts (each text is a list of words)
         stop_words (List[str]): List of stopwords to remove
 
     Returns:
-        List[List[str]]: List of texts with stopwords removed (each text is a
-        list of words)
+        List[List[str]]: List of texts with stopwords removed (each text is a list of words)
     """
-    return [
-        [word for word in simple_preprocess(str(doc)) if word not in stop_words]
-        for doc in texts
-    ]
+    return [[word for word in doc if word not in stop_words] for doc in texts]
 
 
 def lemmatization(
@@ -312,13 +246,13 @@ def timer_decorator(func):
 
 
 def process_document_chunk(
-    pdc_args: Tuple[str, set, spacy.language.Language],
+    pdc_args: Tuple[str, set],
 ) -> List[str]:
     """
     Process a single document through all preprocessing steps.
 
     Args:
-        pdc_args: Tuple containing (document, stop_words, nlp)
+        pdc_args: Tuple containing (document, stop_words)
 
     Returns:
         List[str]: Processed tokens from the document
@@ -330,12 +264,12 @@ def process_document_chunk(
     4. Remove words with less than 3 characters
     5. Lemmatization
     """
-    document, stop_words, nlp = pdc_args
+    document, stop_words = pdc_args
 
     # Apply preprocessing steps sequentially
     text = basic_preprocessing(document)
     tokens = list(sent_to_words([text]))[0]
-    tokens = remove_stopwords([tokens], stop_words)[0]
+    tokens = remove_stopwords([tokens], list(stop_words))[0]
     # Remove tokens that contain numbers
     tokens = [token for token in tokens if not any(char.isdigit() for char in token)]
     tokens = remove_words_less_than_length_three_characters([tokens])[0]
@@ -406,89 +340,9 @@ def make_trigrams(
     return [trigram_mod[bigram_mod[doc]] for doc in texts]
 
 
-def analyze_corpus(
-    id2word: Dict[int, str],
-    bow_corpus: List[List[Tuple[int, int]]],
-    tfidf_corpus: List[List[Tuple[int, float]]],
-    num_words: int = 10,
-) -> None:
-    """
-    Comprehensive analysis of both bow and tfidf corpus.
-
-    Args:
-        id2word (Dict[int, str]): Mapping of word IDs to words
-        bow_corpus (List[List[Tuple[int, int]]]): Bag of words corpus
-        tfidf_corpus (List[List[Tuple[int, float]]]): TF-IDF corpus
-        num_words (int): Number of top words to display for comparison
-
-    Returns:
-        None
-    """
-    # Get vocabulary
-    vocabulary = list(id2word.values())
-    logger.info("Total vocabulary size: %d", len(vocabulary))
-
-    # Print some vocabulary statistics
-    logger.info("Vocabulary Sample (first 20 words):")
-    logger.info(vocabulary[:20])
-
-    # Analyze document lengths
-    doc_lengths = [len(doc) for doc in bow_corpus]
-    logger.info("Document length statistics:")
-    logger.info(
-        "  - Average words per document: %.2f", sum(doc_lengths) / len(doc_lengths)
-    )
-    logger.info("  - Max words in a document: %d", max(doc_lengths))
-    logger.info("  - Min words in a document: %d", min(doc_lengths))
-
-    # Compare BOW vs TF-IDF weights for first document
-    if len(bow_corpus) > 0:
-        logger.info("Comparing BOW vs TF-IDF weights for first document:")
-        bow_doc = bow_corpus[0]
-        tfidf_doc = tfidf_corpus[0]
-
-        # Get top 10 words by frequency (BOW) and by TF-IDF weight
-        bow_sorted = sorted(bow_doc, key=lambda x: x[1], reverse=True)[:num_words]
-        tfidf_sorted = sorted(tfidf_doc, key=lambda x: x[1], reverse=True)[:num_words]
-
-        logger.info("Top %d words by frequency (BOW):", num_words)
-        for word_id, freq in bow_sorted:
-            logger.info("  - %s: %d", id2word[word_id], freq)
-
-        logger.info("Top %d words by TF-IDF weight:", num_words)
-        for word_id, weight in tfidf_sorted:
-            logger.info("  - %s: %.3f", id2word[word_id], weight)
-
-
-def check_vocabulary(
-    id2word: Dict[int, str],
-    texts: List[List[str]],
-) -> None:
-    """
-    Check the vocabulary and processed texts for debugging purposes.
-
-    Args:
-        id2word (Dict[int, str]): Mapping of word IDs to words
-        texts (List[List[str]]): List of processed texts (tokenized documents)
-
-    Returns:
-        None
-    """
-    logger.info("\nDebug: Vocabulary Check")
-    logger.info("Vocabulary size: %d", len(id2word))
-    logger.info(
-        "Sample of vocabulary (first 10 words): %s", list(id2word.values())[:10]
-    )
-
-    logger.info("\nDebug: Processed Texts Check")
-    logger.info("Number of documents: %d", len(texts))
-    if texts:
-        logger.info("First document length: %d", len(texts[0]))
-        logger.info("Sample of first document (first 10 words): %s", texts[0][:10])
-
-
 def pre_processing_helper(
     texts: List[List[str]],
+    mode: str,
 ) -> Tuple[
     corpora.Dictionary,  # dictionary
     List[List[Tuple[int, int]]],  # bow_corpus
@@ -496,6 +350,13 @@ def pre_processing_helper(
 ]:
     # Create Dictionary - mapping of unique ids to words in the documents
     dic = corpora.Dictionary(texts)
+    logger.info("Number of unique tokens in %s mode: %d", mode, len(dic))
+
+    # Filter out tokens that appear in less than 10 documents or more than 50% of documents
+    dic.filter_extremes(no_below=10, no_above=0.5, keep_n=100000)
+    logger.info(
+        "Number of unique tokens after filtering in %s mode: %d", mode, len(dic)
+    )
 
     bc = [dic.doc2bow(text) for text in texts]
 
@@ -509,8 +370,6 @@ def pre_processing_helper(
     tfc = tfidf[bc]
     del tfidf
 
-    logger.info("Number of unique tokens: %d", len(dic))
-
     return (
         dic,
         bc,
@@ -523,6 +382,7 @@ def pre_processing_gensim(
     documents_generator: Iterator[List[str]],
     num_cores: int,
     config: Dict,
+    mode: str,
 ) -> Tuple[
     Dict[int, str],
     List[List[str]],
@@ -536,6 +396,7 @@ def pre_processing_gensim(
         documents_generator (Iterator[List[str]]): Iterator of document batches
         num_cores (int): Number of CPU cores to use
         config (Dict): Configuration dictionary from YAML
+        mode (str): Training or testing mode
 
     Returns:
         Tuple containing:
@@ -551,10 +412,15 @@ def pre_processing_gensim(
     stop_words = set(stopwords.words("english"))
 
     # Define paths to additional stopwords files
+    # stopwords_files = [
+    #     "stopwords/additional_stopwords.txt",
+    #     "stopwords/financial_stopwords.txt",
+    #     "stopwords/generic_stopwords.txt",
+    # ]
+    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
     stopwords_files = [
-        "stopwords/additional_stopwords.txt",
-        "stopwords/financial_stopwords.txt",
-        "stopwords/generic_stopwords.txt",
+        os.path.join(stopwords_files_path, file)
+        for file in os.listdir(stopwords_files_path)
     ]
 
     # Add domain-specific stopwords from files
@@ -586,8 +452,6 @@ def pre_processing_gensim(
 
     logger.info("Pre-processing the documents")
 
-    all_bow_corpus = []
-    all_tfidf_corpus = []
     all_texts = []
 
     # Check if the generator is empty
@@ -599,12 +463,11 @@ def pre_processing_gensim(
             continue
 
         # Prepare arguments for parallel processing
-        process_args = [(doc, stop_words, nlp) for doc in batch_documents]
+        process_args = [(doc, stop_words) for doc in batch_documents]
 
         # Use ProcessPoolExecutor for CPU-bound preprocessing
         parallel_start = time.time()
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            # processed_data = list(executor.map(process_document_chunk, process_args))
             processed_batch = process_map(
                 process_document_chunk,
                 process_args,
@@ -628,15 +491,16 @@ def pre_processing_gensim(
             parallel_time / len(batch_documents),
         )
 
+        mixture_unigrams_start = time.time()
         # 6. Build the bigram and trigram models
         bigram = models.Phrases(
             processed_batch,
             min_count=5,
-            threshold=200,
+            threshold=100,
         )  # higher threshold fewer phrases.
         trigram = models.Phrases(
             bigram[processed_batch],
-            threshold=200,
+            threshold=100,
         )
 
         # Faster way to get a sentence clubbed as a trigram/bigram
@@ -650,8 +514,15 @@ def pre_processing_gensim(
             trigram_mod,
             bigram_mod,
         )
+        mixture_unigrams_end = time.time()
+        mixture_unigrams_time = mixture_unigrams_end - mixture_unigrams_start
+        logger.info(
+            "Mixture unigrams completed in %.2f seconds",
+            mixture_unigrams_time,
+        )
 
         # Lemmatize the tokens
+        lemmatization_start = time.time()
         data_lemmatized = lemmatization(
             batch_bigrams_trigrams,
             nlp,
@@ -659,8 +530,23 @@ def pre_processing_gensim(
                 "allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]
             ),
         )
+        lemmatization_end = time.time()
+        lemmatization_time = lemmatization_end - lemmatization_start
+        logger.info(
+            "Lemmatization completed in %.2f seconds",
+            lemmatization_time,
+        )
 
-        all_texts.extend(data_lemmatized)
+        all_texts.extend(data_lemmatized)  # Type: List[List[str]]
+
+        # Remove stopwords again to ensure no stopwords are in the corpus from all_texts
+        all_texts = remove_stopwords(all_texts, stop_words)  # Type: List[List[str]]
+
+        # Remove elements of [0, 000, 001, 002, 003, ...] from all_texts
+        all_texts = [
+            [word for word in text if not re.match(r"^0*[0-9]+$", word)]
+            for text in all_texts
+        ]
 
         del bigram
         del bigram_mod
@@ -673,7 +559,6 @@ def pre_processing_gensim(
 
     if empty_generator:
         logger.error("No documents were provided for processing")
-        # Return empty structures to avoid errors downstream
         return (
             corpora.Dictionary(),
             [],
@@ -683,7 +568,6 @@ def pre_processing_gensim(
 
     if not all_texts:
         logger.error("No valid documents were processed")
-        # Return empty structures to avoid errors downstream
         return (
             corpora.Dictionary(),
             [],
@@ -691,13 +575,17 @@ def pre_processing_gensim(
             [],
         )
 
-    dictionary_gensim, bow_corpus_gensim, tfidf_corpus_gensim = pre_processing_helper(
-        all_texts,
+    dic_start = time.time()
+    (
+        dictionary_gensim,
+        bow_corpus_gensim,
+        tfidf_corpus_gensim,
+    ) = pre_processing_helper(all_texts, mode)
+    dic_end = time.time()
+    logger.info(
+        "Dictionary, bow_corpus, tfidf_corpus created in %.2f seconds",
+        dic_end - dic_start,
     )
-
-    if config.get("debug", "enabled") is True:
-        check_vocabulary(dictionary_gensim, all_texts)
-        analyze_corpus(dictionary_gensim, bow_corpus_gensim, tfidf_corpus_gensim)
 
     return (
         dictionary_gensim,
@@ -710,7 +598,7 @@ def pre_processing_gensim(
 def filter_corpus_by_tfidf(
     corpus: List[List[Tuple[int, float]]],
     dictionary: corpora.Dictionary,
-    low_value_threshold: float = 0.025,
+    low_value_threshold: float,
 ) -> Tuple[List[List[Tuple[int, float]]], corpora.Dictionary]:
     """
     Filter corpus based on TF-IDF scores and remove missing words.
@@ -775,66 +663,32 @@ def filter_corpus_by_tfidf(
     )
 
     logger.info("\nFiltering Statistics:")
-    logger.info(f"Initial vocabulary size: {initial_terms}")
-    logger.info(f"Terms removed: {removed_terms} ({percentage_removed:.1f}%)")
-    logger.info(f"Final vocabulary size: {final_terms}")
+    logger.info("Initial vocabulary size: %d", initial_terms)
+    logger.info("Terms removed: %d (%f%%)", removed_terms, percentage_removed)
+    logger.info("Final vocabulary size: %d", final_terms)
 
     return filtered_corpus, new_dictionary
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run LDA Topic Modeling Pipeline")
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to configuration file",
-    )
-    parser.add_argument(
-        "--data",
-        required=False,
-        default="data_url_csv.txt",
-        help="Path to input text document",
-    )
-    parser.add_argument(
-        "-n",
-        "--num_docs",
-        type=int,
-        required=True,
-        help="""How many documents to run the topic modeling on. If running for
-        less documents, mention the exact number. If want to run for all
-        documents, enter 0""",
-    )
-    parser.add_argument(
-        "-nc",
-        "--num_cores",
-        type=int,
-        required=False,
-        default=16,
-        help="Minimum number of cores to run the topic modeling on. If not provided, the number of cores will be determined automatically.",
-    )
-    parser.add_argument(
-        "-b",
-        "--batch_size",
-        type=int,
-        required=False,
-        default=100,
-        help="Number of documents to process in each batch. If not provided, the batch size will be 100.",
-    )
-    args = parser.parse_args()
+def test_corpus_filtering(
+    dic: corpora.Dictionary,
+    test_texts: List[List[str]],
+) -> Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, float]]]]:
+    """
+    Filter the test corpus based on the train dictionary and tfidf model.
 
-    # Load configuration
-    config = load_config(args.config)
-    documents_generator = utils.load_files_in_batches(
-        batch_size=args.batch_size,
-        num_docs=args.num_docs,
-    )
-    (
-        dictionary,
-        bow_corpus,
-        tfidf_corpus,
-        all_texts,
-    ) = pre_processing_gensim(
-        documents_generator,
-        num_cores=args.num_cores,
-        config=config["preprocessing"],
-    )
+    Args:
+        dic (corpora.Dictionary): Gensim dictionary mapping word IDs to words for the train corpus
+        test_texts (List[List[str]]): List of tokenized documents for the test corpus
+
+    Returns:
+        Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, float]]]]:
+        Tuple containing:
+        - Filtered bow corpus
+        - Filtered tfidf corpus
+    """
+    bow_corpus = [dic.doc2bow(text) for text in test_texts]
+    tfidf_model = models.TfidfModel(corpus=bow_corpus, id2word=dic)
+    tfidf_corpus = tfidf_model[bow_corpus]
+
+    return bow_corpus, tfidf_corpus
