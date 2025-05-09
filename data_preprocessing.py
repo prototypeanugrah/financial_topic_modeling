@@ -352,8 +352,9 @@ def pre_processing_helper(
     dic = corpora.Dictionary(texts)
     logger.info("Number of unique tokens in %s mode: %d", mode, len(dic))
 
-    # Filter out tokens that appear in less than 10 documents or more than 50% of documents
-    dic.filter_extremes(no_below=10, no_above=0.5, keep_n=100000)
+    # Filter out tokens that appear in less than 5 documents or more than 80%
+    # of documents
+    dic.filter_extremes(no_below=2, no_above=0.9, keep_n=100000)
     logger.info(
         "Number of unique tokens after filtering in %s mode: %d", mode, len(dic)
     )
@@ -412,11 +413,6 @@ def pre_processing_gensim(
     stop_words = set(stopwords.words("english"))
 
     # Define paths to additional stopwords files
-    # stopwords_files = [
-    #     "stopwords/additional_stopwords.txt",
-    #     "stopwords/financial_stopwords.txt",
-    #     "stopwords/generic_stopwords.txt",
-    # ]
     stopwords_files_path = config.get("stop_words_extra", "./stopwords")
     stopwords_files = [
         os.path.join(stopwords_files_path, file)
@@ -539,14 +535,20 @@ def pre_processing_gensim(
 
         all_texts.extend(data_lemmatized)  # Type: List[List[str]]
 
+        minor_cleaning_start = time.time()
         # Remove stopwords again to ensure no stopwords are in the corpus from all_texts
         all_texts = remove_stopwords(all_texts, stop_words)  # Type: List[List[str]]
 
-        # Remove elements of [0, 000, 001, 002, 003, ...] from all_texts
+        # Remove all words that are numbers
         all_texts = [
-            [word for word in text if not re.match(r"^0*[0-9]+$", word)]
+            [word for word in text if not any(char.isdigit() for char in word)]
             for text in all_texts
         ]
+        minor_cleaning_end = time.time()
+        logger.info(
+            "Minor cleaning completed in %.2f seconds",
+            minor_cleaning_end - minor_cleaning_start,
+        )
 
         del bigram
         del bigram_mod

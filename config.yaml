@@ -4,18 +4,12 @@ preprocessing:
     enabled: true
     threshold: 0.01
     remove_missing_words: true
-  model_type: lda
-  vectorizer:
-    - min_df: 3
-    - max_features: 29999
-    - token_pattern: '[a-zA-Z0-9]{4,}'
   allowed_postags:
     - NOUN
     - ADJ
     - VERB
     - ADV
   stop_words_extra: ./stopwords
-  min_word_length: 3
   spacy_model: en_core_web_sm
   spacy_disabled:
     - parser
@@ -28,8 +22,8 @@ lda:
   optimize_topics: true
   topic_range:
     start: 1
-    limit: 200
-    step: 10
+    limit: 52
+    step: 3
   gensim:
     random_state: 100
     update_every: 1
