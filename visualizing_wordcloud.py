@@ -2,6 +2,7 @@
 import math
 import random
 import numpy as np
+import os
 
 from matplotlib import pyplot as plt
 from wordcloud import WordCloud, STOPWORDS
@@ -63,12 +64,11 @@ def visualize_wordcloud(lda_model, output_path, config):
     else:
         raise ValueError("Unsupported LDA model type")
 
-    # Calculate grid size for subplots
+    # Calculate grid size for subplots (max 4x4 grid per figure)
     n_topics = len(topics_words)
-    grid_size = int(np.ceil(np.sqrt(n_topics)))
-
-    # Create figure with subplots
-    fig = plt.figure(figsize=(5 * grid_size, 5 * grid_size))
+    topics_per_figure = 16  # Maximum number of subplots per figure
+    n_figures = math.ceil(n_topics / topics_per_figure)
+    grid_size = 4  # Fixed grid size of 4x4
 
     # Create and configure the WordCloud object
     cloud = WordCloud(
@@ -84,95 +84,46 @@ def visualize_wordcloud(lda_model, output_path, config):
         random_state=config.get("random_state", 42),
     )
 
-    # Generate wordcloud for each topic
-    for topic_idx, topic_words in topics_words.items():
-        # Create subplot
-        ax = fig.add_subplot(grid_size, grid_size, topic_idx + 1)
+    # Generate wordclouds for each topic, split across multiple figures if needed
+    for fig_idx in range(n_figures):
+        # Create figure
+        fig = plt.figure(figsize=(20, 20))
 
-        # Generate wordcloud for this topic
-        cloud.generate_from_frequencies(topic_words)
+        # Calculate topics for this figure
+        start_idx = fig_idx * topics_per_figure
+        end_idx = min((fig_idx + 1) * topics_per_figure, n_topics)
 
-        # Display the wordcloud
-        ax.imshow(cloud, interpolation="bilinear")
-        ax.set_title(f"Topic {topic_idx + 1}", pad=20)
-        ax.axis("off")
+        # Generate wordcloud for each topic in this figure
+        for topic_idx in range(start_idx, end_idx):
+            if topic_idx in topics_words:
+                # Calculate position in grid
+                pos = topic_idx - start_idx
+                row = pos // grid_size
+                col = pos % grid_size
 
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(str(output_path), bbox_inches="tight", dpi=300)
-    plt.close()
+                # Create subplot
+                ax = fig.add_subplot(grid_size, grid_size, pos + 1)
 
+                # Generate wordcloud for this topic
+                cloud.generate_from_frequencies(topics_words[topic_idx])
 
-# def visualize_wordcloud(
-#     model,
-#     output_path,
-#     wordcloud_config,
-# ):
-#     cols = [
-#         color for _, color in mcolors.TABLEAU_COLORS.items()
-#     ]  # more colors: 'mcolors.XKCD_COLORS'
+                # Display the wordcloud
+                ax.imshow(cloud, interpolation="bilinear")
+                ax.set_title(f"Topic {topic_idx + 1}", pad=20)
+                ax.axis("off")
 
-#     width = wordcloud_config["width"]
-#     height = wordcloud_config["height"]
-#     background_color = wordcloud_config["background_color"]
+        # Adjust layout and save
+        plt.tight_layout()
+        if n_figures > 1:
+            # If multiple figures, add figure number to filename
+            base_path = str(output_path)
+            name, ext = os.path.splitext(base_path)
+            fig_path = f"{name}_fig{fig_idx + 1}{ext}"
+        else:
+            fig_path = str(output_path)
 
-#     stop_words = stopwords.words("english")
-
-#     topics = model.show_topics(formatted=False)
-#     num_topics = len(topics)
-
-#     grid_size = math.ceil(math.sqrt(num_topics))
-#     rows = grid_size
-#     cols = grid_size
-
-#     cloud = WordCloud(
-#         stopwords=stop_words,
-#         background_color=background_color,
-#         width=width,
-#         height=height,
-#         max_words=10,
-#         colormap="tab10",
-#         color_func=lambda *args, **kwargs: cols[i % len(cols)],
-#         prefer_horizontal=1.0,
-#     )
-
-#     # fig, axes = plt.subplots(2, 5, figsize=(7, 7), sharex=True, sharey=True)
-
-#     # for i, ax in enumerate(axes.flatten()):
-#     #     fig.add_subplot(ax)
-#     #     topic_words = dict(topics[i][1])
-#     #     cloud.generate_from_frequencies(topic_words, max_font_size=200)
-#     #     plt.gca().imshow(cloud)
-#     #     plt.gca().set_title("Topic " + str(i + 1), fontdict=dict(size=13))
-#     #     plt.gca().axis("off")
-
-#     # plt.subplots_adjust(wspace=0, hspace=0)
-#     # plt.axis("off")
-#     # plt.margins(x=0, y=0)
-#     # plt.tight_layout()
-#     # plt.savefig(output_path)
-#     # # plt.show()
-
-#     fig = plt.figure(figsize=(20, 20))
-
-#     for i in range(num_topics):
-#         if i < len(topics):  # Check if we have this topic
-#             topic_words = dict(topics[i][1])
-
-#             # Create subplot
-#             ax = fig.add_subplot(rows, cols, i + 1)
-#             cloud.generate_from_frequencies(topic_words, max_font_size=200)
-#             plt.gca().imshow(cloud)
-#             plt.gca().set_title(f"Topic {i + 1}", fontdict=dict(size=16))
-#             plt.gca().axis("off")
-
-#     plt.subplots_adjust(wspace=0, hspace=0)
-#     plt.margins(x=0, y=0)
-#     plt.tight_layout()
-
-#     # Save the figure
-#     plt.savefig(output_path, bbox_inches="tight", dpi=300)
-#     plt.close()
+        plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+        plt.close()
 
 
 # if __name__ == "__main__":
