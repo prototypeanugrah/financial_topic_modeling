@@ -79,22 +79,28 @@ financial_topic_modeling/
 The main script can be run with the following command:
 
 ```bash
-uv run main.py
-  --config config.yaml
-  --data <path_to_documents>
-  -n <num_docs>
-  -m <model_type>
+uv run main.py \
+  --config config.yaml \
+  -n <num_docs> \
+  [-k <num_topics>] \
+  [-nc <num_cores>] \
+  [-b <batch_size>] \
+  [-t <test_perc>]
 ```
 
 Parameters:
-- `--config`: Path to configuration file (default: config.yaml)
-- `--data`: Path to input text documents (required)
-- `-n/--num_docs`: Number of documents to process (0 for all documents)
-- `-m/--model_type`: LDA implementation to use ('gensim' or 'sklearn')
+- `--config`: Path to configuration file (default: `config.yaml`)
+- `-n/--num_docs`: Number of documents to process (0 for all documents, required).
+- `-k/--num_topics`: Number of topics. If not provided, it's determined automatically via optimization.
+- `-nc/--num_cores`: Number of CPU cores for parallel processing (default: 16).
+- `-b/--batch_size`: Number of documents to process in each batch (default: 100).
+- `-t/--test_perc`: Percentage of documents for the test set (default: 0.1, e.g., 0.1 for 10%).
+
+**Note:** Input documents are expected to be located in a directory named `raw_data_files` in the project root.
 
 Example:
 ```bash
-uv run main.py --config config.yaml --data documents.txt -n 10 -m sklean
+uv run main.py --config config.yaml -n 1000 -k 20 -nc 16 -b 200 -t 0.1
 ```
 
 ## Features
@@ -125,7 +131,8 @@ The pipeline generates several output files:
 - `metrics.yaml`: Model performance metrics
 - `wordcloud.png`: Visual representation of topics
 - `word_frequency_plot.png`: Analysis of word frequencies
-- `perplexity_plot.png`: Topic optimization results
+- `perplexity_plot_test.png`: Topic optimization results (perplexity vs. number of topics for the test set)
+- `topic_perplexity_scores.txt`: Perplexity scores for each number of topics evaluated during optimization.
 
 ## Configuration
 
