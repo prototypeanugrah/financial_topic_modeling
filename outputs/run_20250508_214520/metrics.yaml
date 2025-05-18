@@ -1,0 +1,57 @@
+config:
+  lda:
+    gensim:
+      alpha: auto
+      chunksize: 1000
+      eta: auto
+      iterations: 400
+      passes: 20
+      per_word_topics: false
+      random_state: 100
+      update_every: 1
+    optimize_topics: true
+    sklearn:
+      batch_size: 100
+      learning_decay: 0.5
+      learning_method: online
+      max_iter: 25
+      n_components: 20
+      n_jobs: None
+      random_state: 100
+    topic_range:
+      limit: 52
+      start: 1
+      step: 3
+  logging:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level: INFO
+  output:
+    base_dir: outputs
+    save_metrics: true
+    save_model: true
+    save_visualizations: true
+  preprocessing:
+    allowed_postags:
+    - NOUN
+    - ADJ
+    - VERB
+    - ADV
+    debug:
+    - enabled: false
+    spacy_disabled:
+    - parser
+    - ner
+    spacy_model: en_core_web_sm
+    stop_words_extra: ./stopwords
+    tfidf_filtering:
+      enabled: true
+      remove_missing_words: true
+      threshold: 0.01
+  visualization:
+    wordcloud:
+      background_color: white
+      height: 400
+      width: 800
+perplexity:
+  test: 348.6293346164942
+  train: 294.8633634379092

@@ -1,0 +1,7 @@
+(0, '0.034*"shareholder" + 0.025*"ordinary" + 0.015*"rsquo" + 0.013*"consummation" + 0.012*"sponsor" + 0.010*"client" + 0.010*"fortress" + 0.008*"trust_account" + 0.008*"consummate" + 0.008*"rdquo"')
+(1, '0.013*"patient" + 0.010*"patent" + 0.009*"healthcare" + 0.009*"medical" + 0.008*"physician" + 0.007*"health" + 0.006*"device" + 0.006*"clinical" + 0.005*"laboratory" + 0.005*"care"')
+(2, '0.022*"natural" + 0.022*"unitholder" + 0.015*"production" + 0.012*"energy" + 0.011*"enbridge" + 0.010*"coal" + 0.009*"pipeline" + 0.007*"subordinate" + 0.007*"transportation" + 0.006*"storage"')
+(3, '0.009*"holding" + 0.006*"inventory" + 0.006*"indebtedness" + 0.005*"store" + 0.005*"shareholder" + 0.005*"home" + 0.005*"restaurant" + 0.004*"production" + 0.004*"supply" + 0.004*"borrowing"')
+(4, '0.013*"software" + 0.012*"solution" + 0.010*"network" + 0.008*"platform" + 0.007*"user" + 0.006*"advertising" + 0.005*"thousand" + 0.005*"consumer" + 0.004*"client" + 0.004*"subscription"')
+(5, '0.018*"deposit" + 0.014*"portfolio" + 0.010*"banking" + 0.009*"mortgage" + 0.009*"shareholder" + 0.008*"ratio" + 0.008*"consumer" + 0.007*"allowance" + 0.006*"holding" + 0.006*"borrower"')
+(6, '0.022*"candidate" + 0.021*"patent" + 0.015*"drug" + 0.015*"clinical" + 0.013*"patient" + 0.013*"clinical_trial" + 0.008*"study" + 0.008*"trial" + 0.006*"collaboration" + 0.006*"disease"')
