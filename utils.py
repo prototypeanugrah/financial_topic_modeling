@@ -344,6 +344,107 @@ def save_topic_perplexity_scores(
             f.write(f"{topic_num},{perplexity}\n")
 
 
+def save_optimization_metrics(
+    topic_range: Dict,
+    all_metrics: Dict[int, Dict[str, float]],
+    output_dir: Path,
+) -> None:
+    """
+    Save comprehensive metrics from topic optimization.
+
+    Args:
+        topic_range: Topic range configuration
+        all_metrics: Dictionary of all metrics per topic number
+        output_dir: Output directory path
+    """
+    # Prepare data for saving
+    results = []
+    for num_topics in sorted(all_metrics.keys()):
+        metrics = all_metrics[num_topics]
+        row = {
+            'num_topics': num_topics,
+            'perplexity': metrics.get('perplexity'),
+            'coherence_c_v': metrics.get('coherence_c_v'),
+            'coherence_u_mass': metrics.get('coherence_u_mass'),
+            'coherence_c_npmi': metrics.get('coherence_c_npmi'),
+        }
+        results.append(row)
+
+    # Save as CSV
+    import csv
+    csv_path = output_dir / "optimization_metrics.csv"
+    with open(csv_path, 'w', newline='') as f:
+        if results:
+            writer = csv.DictWriter(f, fieldnames=results[0].keys())
+            writer.writeheader()
+            writer.writerows(results)
+
+    logger.info(f"Saved optimization metrics to {csv_path}")
+
+    # Also save as JSON for programmatic access
+    json_path = output_dir / "optimization_metrics.json"
+    with open(json_path, 'w') as f:
+        import json
+        json.dump(all_metrics, f, indent=2)
+
+
+def plot_metrics_comparison(
+    topic_range: Dict,
+    all_metrics: Dict[int, Dict[str, float]],
+    output_dir: Path,
+) -> None:
+    """
+    Create comprehensive visualization of all metrics.
+    """
+    import matplotlib.pyplot as plt
+
+    topic_numbers = sorted(all_metrics.keys())
+
+    # Extract metrics
+    perplexity = [all_metrics[n].get('perplexity', float('inf')) for n in topic_numbers]
+    coherence_cv = [all_metrics[n].get('coherence_c_v', 0) for n in topic_numbers]
+    coherence_umass = [all_metrics[n].get('coherence_u_mass', 0) for n in topic_numbers]
+
+    # Create figure with subplots
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12))
+
+    # Plot perplexity
+    axes[0].plot(topic_numbers, perplexity, 'b-o')
+    axes[0].set_xlabel('Number of Topics')
+    axes[0].set_ylabel('Perplexity (lower is better)')
+    axes[0].set_title('Perplexity vs Number of Topics')
+    axes[0].grid(True, alpha=0.3)
+
+    # Mark best perplexity
+    valid_perplexity = [p for p in perplexity if p != float('inf')]
+    if valid_perplexity:
+        best_idx = perplexity.index(min(valid_perplexity))
+        axes[0].plot(topic_numbers[best_idx], perplexity[best_idx], 'r*', markersize=15)
+        axes[0].annotate(f'Best: {topic_numbers[best_idx]} topics',
+                         xy=(topic_numbers[best_idx], perplexity[best_idx]),
+                         xytext=(10, 10), textcoords='offset points')
+
+    # Plot coherence C_V
+    axes[1].plot(topic_numbers, coherence_cv, 'g-s')
+    axes[1].set_xlabel('Number of Topics')
+    axes[1].set_ylabel('Coherence C_V (higher is better)')
+    axes[1].set_title('Topic Coherence C_V vs Number of Topics')
+    axes[1].grid(True, alpha=0.3)
+
+    # Plot coherence U_Mass
+    axes[2].plot(topic_numbers, coherence_umass, 'm-^')
+    axes[2].set_xlabel('Number of Topics')
+    axes[2].set_ylabel('Coherence U_Mass (higher is better)')
+    axes[2].set_title('Topic Coherence U_Mass vs Number of Topics')
+    axes[2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'metrics_comparison.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+    logger.info(f"Saved metrics comparison plot to {output_dir / 'metrics_comparison.png'}")
+
+
 def analyze_word_frequencies(file_path: Path, output_dir: Path) -> None:
     """Analyze word frequencies in topics.txt and create a visualization."""
     # Read the file

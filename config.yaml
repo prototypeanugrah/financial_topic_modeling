@@ -20,6 +20,7 @@ preprocessing:
 # LDA model settings
 lda:
   optimize_topics: true
+  save_intermediate_models: true  # Save models to disk during optimization to reduce memory usage
   topic_range:
     start: 1
     limit: 52
