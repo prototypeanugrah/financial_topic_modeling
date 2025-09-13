@@ -1,0 +1,29 @@
+# Data files
+data/
+*.csv
+*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter notebooks (if temporary)
+*.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Environment variables
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
