@@ -61,7 +61,6 @@ financial_topic_modeling/
 │   ├── enhanced_ipo_parser.py      # Advanced IPO document parsing
 │   └── batch_ipo_processor.py      # Batch processing for IPO documents
 ├── lda_model_gensim.py            # Gensim LDA implementation with optimization
-├── lda_model_sklearn.py           # scikit-learn LDA implementation
 ├── utils.py                       # Utility functions for file handling and metrics
 ├── visualizing_wordcloud.py       # Topic visualization utilities
 ├── config.yaml                    # Configuration file
@@ -70,9 +69,9 @@ financial_topic_modeling/
 ├── stopwords/                     # Custom stopword lists
 │   ├── financial_stopwords.txt
 │   └── generic_stopwords.txt
-├── data/                          # Data directory (excluded from git)
-│   └── raw_reports/              # Input documents directory
-└── outputs/                       # Generated results and models
+├── data/
+│   └── raw_reports/
+└── outputs/
 ```
 
 ## Usage
@@ -112,27 +111,16 @@ uv run main.py --config config.yaml -n 1000 -k 20 -nc 16 -b 200 -t 0.1
 - Custom stopword removal for financial domain
 - Advanced lemmatization using spaCy with configurable POS tags
 - Bigram and trigram detection
-- TF-IDF transformation with configurable thresholds
-- Enhanced IPO document parsing with specialized extractors
+- TF-IDF transformation
 
 ### Topic Modeling
 - **Enhanced Gensim LDA implementation** with comprehensive optimization
-- Support for both Gensim and scikit-learn implementations
 - Automated topic number optimization using multiple metrics (perplexity, coherence)
-- Memory-efficient intermediate model saving during optimization
-- Enhanced performance metrics calculation for both train and test sets
 - Document-topic assignment analysis
-
-### Optimization & Analysis
-- **Multi-metric evaluation** including perplexity and coherence scores
-- Comprehensive optimization results saved to `optimization_results.yaml`
-- Enhanced visualization with metric comparison plots
-- Memory management through optional intermediate model saving
 
 ### Visualization
 - Word cloud generation for topics
-- Enhanced word frequency analysis with statistical plots
-- Multi-metric comparison plots for optimization results
+- Word frequency analysis with statistical plots
 - Perplexity score plotting across topic ranges
 
 ## Output
@@ -166,14 +154,12 @@ The `config.yaml` file provides comprehensive customization options:
 - Allowed POS tags for text processing
 - Custom stopword directories
 - spaCy model configuration and disabled components
-- Debug options for preprocessing pipeline
 
 ### LDA Model Settings
 - **Topic optimization**: Enable/disable automatic topic number selection
 - **Memory management**: Optional intermediate model saving during optimization
 - Topic range configuration (start, limit, step)
 - Gensim-specific parameters (random_state, iterations, passes, alpha, eta)
-- scikit-learn parameters for alternative implementation
 
 ### Visualization & Output
 - Wordcloud customization (dimensions, colors)
