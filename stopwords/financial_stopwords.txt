@@ -33,3 +33,7 @@ increase
 income
 value
 offer
+employees
+notes
+shareholders
+awards
