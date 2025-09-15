@@ -19,18 +19,17 @@ preprocessing:
 
 # LDA model settings
 lda:
-  optimize_topics: true
   save_intermediate_models: true  # Save models to disk during optimization to reduce memory usage
   topic_range:
-    start: 1
-    limit: 52
-    step: 3
+    start: 5
+    limit: 55 # 55 for final run
+    step: 5
   gensim:
     random_state: 100
     update_every: 1
     chunksize: 1000
-    iterations: 400
-    passes: 20
+    iterations: 200 # 400 for final run
+    passes: 10 # 20 for final run
     alpha: auto
     eta: auto
     per_word_topics: false

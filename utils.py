@@ -5,22 +5,21 @@ Returns:
     None
 """
 
+import logging
+import multiprocessing as mp
+import random
+import re
+import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Dict, Any, List, Iterator
-import logging
-import multiprocessing as mp
-import time
-import yaml
+from typing import Any, Dict, Iterator, List, Tuple
 
-from gensim.test import utils
-from tqdm import tqdm
-import requests
 import matplotlib.pyplot as plt
-import re
-import random
+import requests
+import yaml
+from tqdm import tqdm
 
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
@@ -362,18 +361,19 @@ def save_optimization_metrics(
     for num_topics in sorted(all_metrics.keys()):
         metrics = all_metrics[num_topics]
         row = {
-            'num_topics': num_topics,
-            'perplexity': metrics.get('perplexity'),
-            'coherence_c_v': metrics.get('coherence_c_v'),
-            'coherence_u_mass': metrics.get('coherence_u_mass'),
-            'coherence_c_npmi': metrics.get('coherence_c_npmi'),
+            "num_topics": num_topics,
+            "perplexity": metrics.get("perplexity"),
+            "coherence_c_v": metrics.get("coherence_c_v"),
+            "coherence_u_mass": metrics.get("coherence_u_mass"),
+            "coherence_c_npmi": metrics.get("coherence_c_npmi"),
         }
         results.append(row)
 
     # Save as CSV
     import csv
+
     csv_path = output_dir / "optimization_metrics.csv"
-    with open(csv_path, 'w', newline='') as f:
+    with open(csv_path, "w", newline="") as f:
         if results:
             writer = csv.DictWriter(f, fieldnames=results[0].keys())
             writer.writeheader()
@@ -383,8 +383,9 @@ def save_optimization_metrics(
 
     # Also save as JSON for programmatic access
     json_path = output_dir / "optimization_metrics.json"
-    with open(json_path, 'w') as f:
+    with open(json_path, "w") as f:
         import json
+
         json.dump(all_metrics, f, indent=2)
 
 
@@ -401,48 +402,53 @@ def plot_metrics_comparison(
     topic_numbers = sorted(all_metrics.keys())
 
     # Extract metrics
-    perplexity = [all_metrics[n].get('perplexity', float('inf')) for n in topic_numbers]
-    coherence_cv = [all_metrics[n].get('coherence_c_v', 0) for n in topic_numbers]
-    coherence_umass = [all_metrics[n].get('coherence_u_mass', 0) for n in topic_numbers]
+    perplexity = [all_metrics[n].get("perplexity", float("inf")) for n in topic_numbers]
+    coherence_cv = [all_metrics[n].get("coherence_c_v", 0) for n in topic_numbers]
+    coherence_umass = [all_metrics[n].get("coherence_u_mass", 0) for n in topic_numbers]
 
     # Create figure with subplots
     fig, axes = plt.subplots(3, 1, figsize=(10, 12))
 
     # Plot perplexity
-    axes[0].plot(topic_numbers, perplexity, 'b-o')
-    axes[0].set_xlabel('Number of Topics')
-    axes[0].set_ylabel('Perplexity (lower is better)')
-    axes[0].set_title('Perplexity vs Number of Topics')
+    axes[0].plot(topic_numbers, perplexity, "b-o")
+    axes[0].set_xlabel("Number of Topics")
+    axes[0].set_ylabel("Perplexity (lower is better)")
+    axes[0].set_title("Perplexity vs Number of Topics")
     axes[0].grid(True, alpha=0.3)
 
     # Mark best perplexity
-    valid_perplexity = [p for p in perplexity if p != float('inf')]
+    valid_perplexity = [p for p in perplexity if p != float("inf")]
     if valid_perplexity:
         best_idx = perplexity.index(min(valid_perplexity))
-        axes[0].plot(topic_numbers[best_idx], perplexity[best_idx], 'r*', markersize=15)
-        axes[0].annotate(f'Best: {topic_numbers[best_idx]} topics',
-                         xy=(topic_numbers[best_idx], perplexity[best_idx]),
-                         xytext=(10, 10), textcoords='offset points')
+        axes[0].plot(topic_numbers[best_idx], perplexity[best_idx], "r*", markersize=15)
+        axes[0].annotate(
+            f"Best: {topic_numbers[best_idx]} topics",
+            xy=(topic_numbers[best_idx], perplexity[best_idx]),
+            xytext=(10, 10),
+            textcoords="offset points",
+        )
 
     # Plot coherence C_V
-    axes[1].plot(topic_numbers, coherence_cv, 'g-s')
-    axes[1].set_xlabel('Number of Topics')
-    axes[1].set_ylabel('Coherence C_V (higher is better)')
-    axes[1].set_title('Topic Coherence C_V vs Number of Topics')
+    axes[1].plot(topic_numbers, coherence_cv, "g-s")
+    axes[1].set_xlabel("Number of Topics")
+    axes[1].set_ylabel("Coherence C_V (higher is better)")
+    axes[1].set_title("Topic Coherence C_V vs Number of Topics")
     axes[1].grid(True, alpha=0.3)
 
     # Plot coherence U_Mass
-    axes[2].plot(topic_numbers, coherence_umass, 'm-^')
-    axes[2].set_xlabel('Number of Topics')
-    axes[2].set_ylabel('Coherence U_Mass (higher is better)')
-    axes[2].set_title('Topic Coherence U_Mass vs Number of Topics')
+    axes[2].plot(topic_numbers, coherence_umass, "m-^")
+    axes[2].set_xlabel("Number of Topics")
+    axes[2].set_ylabel("Coherence U_Mass (higher is better)")
+    axes[2].set_title("Topic Coherence U_Mass vs Number of Topics")
     axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(output_dir / 'metrics_comparison.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / "metrics_comparison.png", dpi=150, bbox_inches="tight")
     plt.close()
 
-    logger.info(f"Saved metrics comparison plot to {output_dir / 'metrics_comparison.png'}")
+    logger.info(
+        f"Saved metrics comparison plot to {output_dir / 'metrics_comparison.png'}"
+    )
 
 
 def analyze_word_frequencies(file_path: Path, output_dir: Path) -> None:
@@ -729,11 +735,13 @@ def save_cv_results(cv_results: Dict[str, Any], output_dir: Path) -> None:
             f.write("=" * 60 + "\n")
 
             config = cv_results["config"]
-            f.write(f"Configuration:\n")
+            f.write("Configuration:\n")
             f.write(f"  Topics: {config['num_topics']}\n")
             f.write(f"  Folds: {config['n_splits']}\n")
             f.write(f"  Documents: {config['total_documents']}\n")
-            f.write(f"  Successful folds: {cv_results['summary']['successful_folds']}\n\n")
+            f.write(
+                f"  Successful folds: {cv_results['summary']['successful_folds']}\n\n"
+            )
 
             summary = cv_results["summary"]
             for split in ["train", "test"]:
@@ -744,16 +752,20 @@ def save_cv_results(cv_results: Dict[str, Any], output_dir: Path) -> None:
                     # Perplexity
                     if "perplexity" in split_summary:
                         p = split_summary["perplexity"]
-                        f.write(f"  Perplexity: {p['mean']:.2f} ± {p['std']:.2f} "
-                               f"[{p['min']:.2f}, {p['max']:.2f}] (n={p['count']})\n")
+                        f.write(
+                            f"  Perplexity: {p['mean']:.2f} ± {p['std']:.2f} "
+                            f"[{p['min']:.2f}, {p['max']:.2f}] (n={p['count']})\n"
+                        )
 
                     # Coherence scores
                     for coherence_type in ["c_v", "u_mass", "c_npmi"]:
                         metric_name = f"coherence_{coherence_type}"
                         if metric_name in split_summary:
                             c = split_summary[metric_name]
-                            f.write(f"  {metric_name}: {c['mean']:.3f} ± {c['std']:.3f} "
-                                   f"[{c['min']:.3f}, {c['max']:.3f}] (n={c['count']})\n")
+                            f.write(
+                                f"  {metric_name}: {c['mean']:.3f} ± {c['std']:.3f} "
+                                f"[{c['min']:.3f}, {c['max']:.3f}] (n={c['count']})\n"
+                            )
                     f.write("\n")
 
         logger.info(f"CV results saved to {output_dir}")
