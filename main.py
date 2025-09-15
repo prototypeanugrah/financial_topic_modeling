@@ -1,10 +1,11 @@
 import argparse
 import logging
 
-from visualizing_wordcloud import visualize_wordcloud
-from data_preprocessing import lda_preprocessing as data_preprocessing
+import cross_validation
 import lda_model_gensim
 import utils
+from data_preprocessing import lda_preprocessing as data_preprocessing
+from visualizing_wordcloud import visualize_wordcloud
 
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
@@ -28,9 +29,7 @@ def main():
         "--num_docs",
         type=int,
         required=True,
-        help="""How many documents to run the topic modeling on. If running for
-        less documents, mention the exact number. If want to run for all
-        documents, enter 0""",
+        help="How many documents to run the topic modeling on. If running for less documents, mention the exact number. If want to run for all documents, enter 0",
     )
     parser.add_argument(
         "-k",
@@ -61,8 +60,34 @@ def main():
         type=float,
         required=False,
         default=0.1,
-        help="Percentage of documents to use for testing. If not provided, the test percentage will be 20%.",
+        help="Percentage of documents to use for testing. If not provided, the test percentage will be 20 percent.",
     )
+
+    parser.add_argument(
+        "--compute_coherence",
+        action="store_true",
+        help="Whether to compute coherence metrics. If not provided, the coherence metrics will be computed. If provided, the coherence metrics will be computed.",
+    )
+
+    parser.add_argument(
+        "--optimize_topics",
+        action="store_true",
+        help="Whether to optimize the number of topics. If not provided, the number of topics will not be optimized.",
+    )
+
+    parser.add_argument(
+        "--cross_validate",
+        action="store_true",
+        help="Perform k-fold cross-validation instead of train/test split evaluation.",
+    )
+
+    parser.add_argument(
+        "--cv_folds",
+        type=int,
+        default=5,
+        help="Number of folds for cross-validation (default: 5).",
+    )
+
     args = parser.parse_args()
 
     # Load configuration
@@ -76,7 +101,39 @@ def main():
         output_dir = utils.setup_output_directory(config)
         logger.info("Results will be saved to %s", output_dir)
 
-        # Load data
+        # Check if cross-validation mode
+        if args.cross_validate:
+            if not args.num_topics:
+                raise ValueError(
+                    "Cross-validation requires specifying number of topics with -k/--num_topics"
+                )
+
+            logger.info("Running in cross-validation mode")
+
+            # Load all documents for CV
+            all_documents = utils.load_all_documents(
+                num_docs=args.num_docs,
+                input_dir="data/raw_reports",
+            )
+
+            # Run cross-validation
+            cv_results = cross_validation.cross_validate_lda(
+                documents=all_documents,
+                config=config,
+                num_topics=args.num_topics,
+                num_cores=args.num_cores,
+                n_splits=args.cv_folds,
+                compute_coherence=args.compute_coherence,
+            )
+
+            # Print and save results
+            cross_validation.print_cv_summary(cv_results)
+            utils.save_cv_results(cv_results, output_dir)
+
+            logger.info("Cross-validation completed successfully")
+            return
+
+        # Load data for standard train/test split
         train_documents_generator, test_documents_generator = (
             utils.load_files_in_batches(
                 batch_size=batch_size,
@@ -85,8 +142,6 @@ def main():
                 input_dir="data/raw_reports",
             )
         )
-
-        # documents = [document]
 
         # -------- Preprocess data --------
         logger.info("Starting preprocessing")
@@ -114,38 +169,42 @@ def main():
         )
 
         # -------- Train model if optimize_topics is True --------
-        if config["lda"]["optimize_topics"]:
+        if args.optimize_topics and not args.num_topics:
             logger.info("Starting topic optimization")
             # Add configuration for optimization
-            save_models_to_disk = config.get("lda", {}).get("save_intermediate_models", True)
-            model_save_dir = output_dir / "intermediate_models" if save_models_to_disk else None
+            save_models_to_disk = config.get("lda", {}).get(
+                "save_intermediate_models", True
+            )
+            model_save_dir = (
+                output_dir / "intermediate_models" if save_models_to_disk else None
+            )
 
             # Run optimization with new interface
-            topic_model, all_metrics, best_topic_num = lda_model_gensim.optimize_topic_number(
-                train_corpus=train_bow_corpus,
-                id2word=train_dictionary,
-                texts=train_texts,
-                topic_range=config["lda"]["topic_range"],
-                model_params=config["lda"]["gensim"],
-                test_corpus=test_bow_corpus,
-                num_cores=args.num_cores,
-                save_models=save_models_to_disk,
-                save_dir=str(model_save_dir) if model_save_dir else None,
-                compute_coherence=True,  # Always compute for reporting
+            topic_model, all_metrics, best_topic_num = (
+                lda_model_gensim.optimize_topic_number(
+                    train_corpus=train_bow_corpus,
+                    id2word=train_dictionary,
+                    texts=train_texts,
+                    topic_range=config["lda"]["topic_range"],
+                    model_params=config["lda"]["gensim"],
+                    test_corpus=test_bow_corpus,
+                    num_cores=args.num_cores,
+                    save_models=save_models_to_disk,
+                    save_dir=str(model_save_dir) if model_save_dir else None,
+                    compute_coherence=args.compute_coherence,  # Always compute for reporting
+                )
             )
 
             # Extract perplexity scores for plotting
             perplexity_scores = [
-                metrics.get('perplexity', float('inf'))
+                metrics.get("perplexity", float("inf"))
                 for num_topics, metrics in sorted(all_metrics.items())
             ]
 
             logger.info("Best number of topics: %s", best_topic_num)
             # Save comprehensive metrics
             utils.save_optimization_metrics(
-                config["lda"]["topic_range"],
-                all_metrics,
-                output_dir
+                config["lda"]["topic_range"], all_metrics, output_dir
             )
 
             # Save topic numbers and perplexity scores (for backward compatibility)
@@ -157,9 +216,7 @@ def main():
 
             # Create enhanced visualization
             utils.plot_metrics_comparison(
-                config["lda"]["topic_range"],
-                all_metrics,
-                output_dir
+                config["lda"]["topic_range"], all_metrics, output_dir
             )
 
             # Create and save the perplexity plot (for backward compatibility)
@@ -170,7 +227,7 @@ def main():
                 mode="test",
             )
 
-        elif args.num_topics:
+        elif args.num_topics and not args.optimize_topics:
             logger.info(
                 "Training LDA model with gensim with %s topics",
                 args.num_topics,
@@ -178,10 +235,10 @@ def main():
             topic_model = lda_model_gensim.model_training(
                 topic_num=args.num_topics,
                 corpus=train_bow_corpus,
-                # corpus=train_bow_corpus,
                 id2word=train_dictionary,
                 model_params=config["lda"]["gensim"],
             )
+
         else:
             raise ValueError("No topic number provided")
 
@@ -193,7 +250,7 @@ def main():
             corpus=train_bow_corpus,
             texts=train_texts,
             id2word=train_dictionary,
-            compute_coherence=True,
+            compute_coherence=args.compute_coherence,
         )
         perf_metrics["train"] = train_metrics
 
@@ -201,9 +258,9 @@ def main():
         test_metrics = lda_model_gensim.performance_metrics(
             model=topic_model,
             corpus=test_bow_corpus,
-            texts=test_texts,
+            texts=train_texts,  # Use train texts for coherence to avoid vocabulary mismatch
             id2word=train_dictionary,
-            compute_coherence=True,
+            compute_coherence=args.compute_coherence,
         )
         perf_metrics["test"] = test_metrics
 

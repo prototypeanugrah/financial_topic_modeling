@@ -81,9 +81,15 @@ def basic_preprocessing(text: str) -> str:
     text = re.sub(r"\S*@\S*\s?", "", text)  # Remove emails
     text = re.sub(r"'", "", text)  # Remove apostrophes
     text = re.sub(r"&nbsp;", " ", text)  # Remove &nbsp;
-    # with open("first_document_cleaned.txt", "w", encoding="utf-8") as f:
-    #     f.write(text)
+
+    # Debug: Log sample text before numeric filtering
+    logger.debug("Sample text before numeric filtering: %s", text[:200] if text else "")
+
     text = re.sub(r"[^a-zA-Z]", " ", text)  # Remove non-alphabet characters
+
+    # Debug: Log sample text after numeric filtering
+    logger.debug("Sample text after numeric filtering: %s", text[:200] if text else "")
+
     text = text.lower()  # Convert to lowercase
     text = re.sub(r"\s+", " ", text)  # Remove extra spaces
 
@@ -115,7 +121,11 @@ def load_stopwords_from_file(filepath: str) -> List[str]:
         logger.error("Encoding error reading stopwords file: %s", filepath)
         return []
     except Exception as e:
-        logger.error("Unexpected error reading stopwords file %s: %s", filepath, str(e))
+        logger.error(
+            "Unexpected error reading stopwords file %s: %s",
+            filepath,
+            str(e),
+        )
         return []
 
 
@@ -240,7 +250,11 @@ def timer_decorator(func):
         result = func(*args, **kwargs)
         end_time = time.time()
         execution_time = end_time - start_time
-        logger.info("%s took %.2f seconds to execute", func.__name__, execution_time)
+        logger.info(
+            "%s took %.2f seconds to execute",
+            func.__name__,
+            execution_time,
+        )
         return result
 
     return wrapper
@@ -288,8 +302,43 @@ def process_document_chunk(
     text = basic_preprocessing(document)
     tokens = list(sent_to_words([text]))[0]
     tokens = remove_stopwords([tokens], list(stop_words))[0]
+
+    # Debug: Log sample tokens before numeric filtering
+    sample_tokens_before = tokens[:20] if tokens else []
+    logger.debug("Sample tokens before numeric filtering: %s", sample_tokens_before)
+
     # Remove tokens that contain numbers
     tokens = [token for token in tokens if not any(char.isdigit() for char in token)]
+
+    # Enhanced filtering for numeric-like patterns (OCR artifacts, etc.)
+    # Remove single-character tokens that look like numbers
+    tokens = [
+        token for token in tokens if not (len(token) == 1 and token.lower() in "oOlI")
+    ]
+
+    # Remove tokens that are purely numeric-like patterns (combinations of o, O, 0-9)
+    tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
+
+    # Remove common OCR artifacts for zeros
+    tokens = [
+        token
+        for token in tokens
+        if token.lower() not in ["o", "oo", "ooo", "oooo", "ooooo"]
+    ]
+
+    # Remove tokens that start or end with common numeric patterns
+    tokens = [
+        token
+        for token in tokens
+        if not (re.match(r"^[oO0-9]", token) and len(token) <= 4)
+    ]
+
+    # Debug: Log sample tokens after enhanced numeric filtering
+    sample_tokens_after = tokens[:20] if tokens else []
+    logger.debug(
+        "Sample tokens after enhanced numeric filtering: %s", sample_tokens_after
+    )
+
     tokens = remove_words_less_than_length_three_characters([tokens])[0]
 
     # Lemmatization using worker's spaCy model
@@ -305,9 +354,30 @@ def process_document_chunk(
             tokens = [
                 token.lemma_ for token in doc if token.pos_ in worker_allowed_postags
             ]
+
+            # Debug: Log sample tokens after lemmatization
+            sample_tokens_lemma = tokens[:20] if tokens else []
+            logger.debug("Sample tokens after lemmatization: %s", sample_tokens_lemma)
+
+            # Final numeric filtering after lemmatization
+            tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
+            tokens = [
+                token
+                for token in tokens
+                if token.lower() not in ["o", "oo", "ooo", "oooo"]
+            ]
+
         except Exception as e:
             logger.warning("Worker lemmatization failed: %s", str(e))
             # Fall back to original tokens
+
+    # Final cleanup - remove any remaining numeric-like patterns
+    tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
+    tokens = [
+        token
+        for token in tokens
+        if token.lower() not in ["o", "oo", "ooo", "oooo", "ooooo"]
+    ]
 
     return tokens
 
@@ -360,12 +430,68 @@ def pre_processing_helper(
     dic = corpora.Dictionary(texts)
     logger.info("Number of unique tokens in %s mode: %d", mode, len(dic))
 
-    # Filter out tokens that appear in less than 5 documents or more than 80%
+    # Debug: Check for numeric-like tokens in dictionary
+    numeric_like_tokens = []
+    for token in dic.values():
+        if re.match(r"^[oO0-9]+$", token) or token in ["o", "oo", "ooo", "oooo"]:
+            numeric_like_tokens.append(token)
+
+    if numeric_like_tokens:
+        logger.warning(
+            "Found %d numeric-like tokens in dictionary before filtering: %s",
+            len(numeric_like_tokens),
+            numeric_like_tokens[:20],
+        )
+
+    # Filter out tokens that appear in less than 2 documents or more than 80%
     # of documents
-    dic.filter_extremes(no_below=2, no_above=0.9, keep_n=100000)
+    dic.filter_extremes(no_below=2, no_above=0.8, keep_n=100000)
     logger.info(
-        "Number of unique tokens after filtering in %s mode: %d", mode, len(dic)
+        "Number of unique tokens after filtering in %s mode: %d",
+        mode,
+        len(dic),
     )
+
+    # Debug: Check for numeric-like tokens in dictionary after filtering
+    numeric_like_tokens_after = []
+    for token in dic.values():
+        if re.match(r"^[oO0-9]+$", token) or token in ["o", "oo", "ooo", "oooo"]:
+            numeric_like_tokens_after.append(token)
+
+    if numeric_like_tokens_after:
+        logger.warning(
+            "Found %d numeric-like tokens in dictionary AFTER filtering: %s",
+            len(numeric_like_tokens_after),
+            numeric_like_tokens_after[:20],
+        )
+
+        # Apply dictionary post-filtering to remove numeric-like tokens
+        logger.info(
+            "Applying post-filtering to remove numeric-like patterns from dictionary"
+        )
+
+        # Get token IDs to remove
+        numeric_token_ids = []
+        for token_id, token in dic.items():
+            if re.match(r"^[oO0-9]+$", token) or token in [
+                "o",
+                "oo",
+                "ooo",
+                "oooo",
+                "ooooo",
+            ]:
+                numeric_token_ids.append(token_id)
+
+        # Filter out the numeric token IDs
+        if numeric_token_ids:
+            logger.info(
+                "Removing %d numeric-like tokens from dictionary",
+                len(numeric_token_ids),
+            )
+            dic.filter_tokens(bad_ids=numeric_token_ids)
+
+        # Log updated dictionary size
+        logger.info("Dictionary size after numeric post-filtering: %d", len(dic))
 
     bc = [dic.doc2bow(text) for text in texts]
 
@@ -461,9 +587,16 @@ def pre_processing_gensim(
                 with open(checkpoint_path, "r") as f:
                     checkpoint_data = json.load(f)
                     processed_batches = checkpoint_data.get("processed_batches", [])
-                    logger.info(f"Resuming {mode} from batch {len(processed_batches)}")
+                    logger.info(
+                        "Resuming %s from batch %d",
+                        mode,
+                        len(processed_batches),
+                    )
             except Exception as e:
-                logger.warning(f"Failed to load checkpoint: {e}. Starting fresh.")
+                logger.warning(
+                    "Failed to load checkpoint: %s. Starting fresh.",
+                    e,
+                )
                 processed_batches = []
 
     # logger.info("Pre-processing the documents")
@@ -480,12 +613,15 @@ def pre_processing_gensim(
     else:
         empty_generator = False
 
-    for batch_documents in tqdm(documents_list, desc=f"Processing {mode} batches"):
+    for batch_documents in tqdm(
+        documents_list,
+        desc=f"Processing {mode} batches",
+    ):
         batch_num += 1
 
         # Skip if resuming and batch already processed
         if resume and batch_num <= len(processed_batches):
-            logger.debug(f"Skipping batch {batch_num} (already processed)")
+            logger.debug("Skipping batch %d (already processed)", batch_num)
             continue
 
         if not batch_documents:
@@ -547,9 +683,9 @@ def pre_processing_gensim(
             try:
                 with open(checkpoint_path, "w") as f:
                     json.dump(checkpoint_data, f, indent=2)
-                logger.debug(f"Checkpoint saved after batch {batch_num}")
+                logger.debug("Checkpoint saved after batch %d", batch_num)
             except Exception as e:
-                logger.warning(f"Failed to save checkpoint: {e}")
+                logger.warning("Failed to save checkpoint: %s", e)
 
         del processed_batch
 
@@ -572,9 +708,6 @@ def pre_processing_gensim(
         )
 
     # Build bigram and trigram models on ALL texts (not per batch)
-    # logger.info("Building n-gram models on %d documents...", len(all_texts))
-    ngram_start = time.time()
-
     bigram = models.Phrases(
         all_texts,
         min_count=5,
@@ -593,30 +726,25 @@ def pre_processing_gensim(
     all_texts = make_bigrams(all_texts, bigram_mod)
     all_texts = make_trigrams(all_texts, trigram_mod, bigram_mod)
 
-    ngram_end = time.time()
-    # logger.info("N-gram processing completed in %.2f seconds", ngram_end - ngram_start)
-
     # Clean up n-gram models to save memory
     del bigram, trigram, bigram_mod, trigram_mod
 
-    # dic_start = time.time()
     (
         dictionary_gensim,
         bow_corpus_gensim,
         tfidf_corpus_gensim,
     ) = pre_processing_helper(all_texts, mode)
-    # dic_end = time.time()
-    # logger.info(
-    #     "Dictionary, bow_corpus, tfidf_corpus created in %.2f seconds",
-    #     dic_end - dic_start,
-    # )
 
     # Validate preprocessing output
     if not validate_preprocessing_output(
-        all_texts, dictionary_gensim, bow_corpus_gensim, mode
+        all_texts,
+        dictionary_gensim,
+        bow_corpus_gensim,
+        mode,
     ):
         logger.warning(
-            "Preprocessing validation failed for %s mode, but continuing...", mode
+            "Preprocessing validation failed for %s mode, but continuing...",
+            mode,
         )
 
     # Clean up checkpoint file on successful completion
@@ -625,7 +753,44 @@ def pre_processing_gensim(
             checkpoint_path.unlink()
             logger.debug("Checkpoint file removed after successful completion")
         except Exception as e:
-            logger.warning(f"Failed to remove checkpoint file: {e}")
+            logger.warning("Failed to remove checkpoint file: %s", e)
+
+    # Final validation: Check for any remaining numeric-like tokens
+    final_numeric_tokens = []
+    for token in dictionary_gensim.values():
+        if re.match(r"^[oO0-9]+$", token) or token in [
+            "o",
+            "oo",
+            "ooo",
+            "oooo",
+            "ooooo",
+        ]:
+            final_numeric_tokens.append(token)
+
+    if final_numeric_tokens:
+        logger.error(
+            "CRITICAL: Found %d numeric-like tokens in FINAL dictionary: %s",
+            len(final_numeric_tokens),
+            final_numeric_tokens[:20],
+        )
+        logger.error(
+            "This indicates the filtering pipeline has failed - consider manual review"
+        )
+    else:
+        logger.info(
+            "✓ Validation passed: No numeric-like tokens found in final dictionary"
+        )
+
+    # Additional validation: Check token quality
+    single_char_tokens = [
+        token for token in dictionary_gensim.values() if len(token) == 1
+    ]
+    if single_char_tokens:
+        logger.warning(
+            "Found %d single-character tokens: %s",
+            len(single_char_tokens),
+            single_char_tokens[:10],
+        )
 
     return (
         dictionary_gensim,
@@ -670,10 +835,18 @@ def validate_preprocessing_output(
     # Check vocabulary size
     vocab_size = len(dictionary)
     if vocab_size < 100:
-        logger.error("[%s] Vocabulary too small: %d terms", mode, vocab_size)
+        logger.error(
+            "[%s] Vocabulary too small: %d terms",
+            mode,
+            vocab_size,
+        )
         return False
     elif vocab_size > 100000:
-        logger.warning("[%s] Very large vocabulary: %d terms", mode, vocab_size)
+        logger.warning(
+            "[%s] Very large vocabulary: %d terms",
+            mode,
+            vocab_size,
+        )
 
     # Check document lengths
     if texts:
@@ -691,7 +864,11 @@ def validate_preprocessing_output(
         )
 
         if max_length < 10:
-            logger.error("[%s] All documents too short (max=%d)", mode, max_length)
+            logger.error(
+                "[%s] All documents too short (max=%d)",
+                mode,
+                max_length,
+            )
             return False
 
     # Check corpus-text alignment
@@ -704,7 +881,6 @@ def validate_preprocessing_output(
         )
         return False
 
-    logger.info("[%s] Validation passed ✓", mode)
     return True
 
 

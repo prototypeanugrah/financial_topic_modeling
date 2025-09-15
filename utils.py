@@ -451,8 +451,8 @@ def analyze_word_frequencies(file_path: Path, output_dir: Path) -> None:
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Extract all words and convert to lowercase
-    words = re.findall(r"\b\w+\b", content.lower())
+    # Extract only topic words between quotes (ignoring topic IDs and probabilities)
+    words = re.findall(r'"([^"]+)"', content)
 
     # Count word frequencies
     word_counts = Counter(words)
@@ -649,3 +649,115 @@ def load_files_in_batches(
                 yield []
 
     return batch_generator(train_files), batch_generator(test_files)
+
+
+def load_all_documents(
+    num_docs: int,
+    input_dir: str = "data/raw_reports",
+) -> List[str]:
+    """
+    Load all documents for cross-validation.
+
+    Args:
+        num_docs: Number of documents to load (0 for all)
+        input_dir: Directory containing the documents
+
+    Returns:
+        List of document texts
+    """
+    logger = logging.getLogger(__name__)
+    input_path = Path(input_dir)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input directory {input_dir} not found")
+
+    # Get all text files
+    files = list(input_path.glob("*.txt"))
+    if not files:
+        raise ValueError(f"No .txt files found in {input_dir}")
+
+    logger.info(f"Found {len(files)} .txt files in directory: {input_dir}")
+
+    # Limit number of files if specified
+    if num_docs > 0:
+        files = files[:num_docs]
+        logger.info(f"Using {len(files)} files for processing")
+
+    # Load all documents
+    documents = []
+    for file_path in tqdm(files, desc="Loading documents"):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:  # Only add non-empty documents
+                    documents.append(content)
+        except Exception as e:
+            logger.warning(f"Failed to read {file_path}: {e}")
+
+    logger.info(f"Successfully loaded {len(documents)} documents")
+    return documents
+
+
+def save_cv_results(cv_results: Dict[str, Any], output_dir: Path) -> None:
+    """
+    Save cross-validation results to files.
+
+    Args:
+        cv_results: CV results dictionary
+        output_dir: Output directory
+    """
+    import json
+    import pickle
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Save summary as JSON
+        summary_file = output_dir / "cv_summary.json"
+        with open(summary_file, "w") as f:
+            json.dump(cv_results["summary"], f, indent=2, default=str)
+
+        # Save full results as pickle (includes models if saved)
+        results_file = output_dir / "cv_results.pkl"
+        with open(results_file, "wb") as f:
+            pickle.dump(cv_results, f)
+
+        # Save readable summary
+        summary_txt = output_dir / "cv_summary.txt"
+        with open(summary_txt, "w") as f:
+            f.write("CROSS-VALIDATION SUMMARY\n")
+            f.write("=" * 60 + "\n")
+
+            config = cv_results["config"]
+            f.write(f"Configuration:\n")
+            f.write(f"  Topics: {config['num_topics']}\n")
+            f.write(f"  Folds: {config['n_splits']}\n")
+            f.write(f"  Documents: {config['total_documents']}\n")
+            f.write(f"  Successful folds: {cv_results['summary']['successful_folds']}\n\n")
+
+            summary = cv_results["summary"]
+            for split in ["train", "test"]:
+                if split in summary:
+                    f.write(f"{split.upper()} SET METRICS:\n")
+                    split_summary = summary[split]
+
+                    # Perplexity
+                    if "perplexity" in split_summary:
+                        p = split_summary["perplexity"]
+                        f.write(f"  Perplexity: {p['mean']:.2f} ± {p['std']:.2f} "
+                               f"[{p['min']:.2f}, {p['max']:.2f}] (n={p['count']})\n")
+
+                    # Coherence scores
+                    for coherence_type in ["c_v", "u_mass", "c_npmi"]:
+                        metric_name = f"coherence_{coherence_type}"
+                        if metric_name in split_summary:
+                            c = split_summary[metric_name]
+                            f.write(f"  {metric_name}: {c['mean']:.3f} ± {c['std']:.3f} "
+                                   f"[{c['min']:.3f}, {c['max']:.3f}] (n={c['count']})\n")
+                    f.write("\n")
+
+        logger.info(f"CV results saved to {output_dir}")
+
+    except Exception as e:
+        logger.error(f"Failed to save CV results: {e}")
+        raise

@@ -2,18 +2,19 @@
 This file contains the functions for training the LDA model using Gensim.
 """
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm
-from typing import Tuple, Dict, List, Any
 import logging
 import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any, Dict, List, Tuple
+
+import numexpr as ne
 import numpy as np
+from gensim import models
 from gensim.corpora import Dictionary
 from gensim.models import CoherenceModel
-from gensim import models
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
-
 
 
 def model_training(
@@ -92,19 +93,19 @@ def performance_metrics(
 
     # Compute Perplexity (primary metric)
     try:
-        metrics['perplexity'] = np.exp2(-model.log_perplexity(corpus))
+        metrics["perplexity"] = np.exp2(-model.log_perplexity(corpus))
     except Exception as e:
         logger.error(f"Failed to compute perplexity: {e}")
-        metrics['perplexity'] = float('inf')
+        metrics["perplexity"] = float("inf")
 
     # Compute Coherence Scores (secondary metrics for reporting)
     if compute_coherence and texts:
         if coherence_types is None:
-            coherence_types = ['c_v', 'u_mass', 'c_npmi']
+            coherence_types = ["c_v"]
 
         for coherence_type in coherence_types:
             try:
-                if coherence_type == 'u_mass':
+                if coherence_type == "u_mass":
                     # u_mass uses corpus, not texts
                     coherence_model = CoherenceModel(
                         model=model,
@@ -120,10 +121,30 @@ def performance_metrics(
                         dictionary=id2word,
                         coherence=coherence_type,
                     )
-                metrics[f'coherence_{coherence_type}'] = coherence_model.get_coherence()
+                coherence_score = coherence_model.get_coherence()
+                # Check for invalid values (NaN, inf, or extremely low values)
+                if (
+                    coherence_score is None
+                    or not isinstance(coherence_score, (int, float))
+                    or coherence_score != coherence_score
+                    or abs(coherence_score) == float("inf")
+                ):
+                    logger.warning(
+                        f"Invalid {coherence_type} coherence score: {coherence_score}"
+                    )
+                    metrics[f"coherence_{coherence_type}"] = None
+                else:
+                    metrics[f"coherence_{coherence_type}"] = coherence_score
+            except (ZeroDivisionError, RuntimeWarning, ValueError) as e:
+                logger.warning(
+                    f"Failed to compute {coherence_type} coherence due to sparse vocabulary: {e}"
+                )
+                metrics[f"coherence_{coherence_type}"] = None
             except Exception as e:
-                logger.warning(f"Failed to compute {coherence_type} coherence: {e}")
-                metrics[f'coherence_{coherence_type}'] = None
+                logger.warning(
+                    f"Unexpected error computing {coherence_type} coherence: {e}"
+                )
+                metrics[f"coherence_{coherence_type}"] = None
 
     return metrics
 
@@ -137,7 +158,7 @@ def _train_single_model(
         List[List[str]],
         List[List[Tuple[int, int]]],  # test_corpus
         bool,  # compute_coherence flag
-        str,   # Optional save path
+        str,  # Optional save path
     ],
 ) -> Tuple[models.LdaModel, Dict[str, float], int]:
     """
@@ -150,11 +171,25 @@ def _train_single_model(
     Returns:
         Tuple of (trained model or None, metrics dict, num_topics)
     """
-    num_topics, train_corpus, id2word, model_params, texts, test_corpus, compute_coherence, save_path = args
+    (
+        num_topics,
+        train_corpus,
+        id2word,
+        model_params,
+        texts,
+        test_corpus,
+        compute_coherence,
+        save_path,
+    ) = args
 
     try:
         # Train model
-        model = model_training(num_topics, train_corpus, id2word, model_params)
+        model = model_training(
+            num_topics,
+            train_corpus,
+            id2word,
+            model_params,
+        )
 
         # Compute metrics on test set
         metrics = performance_metrics(
@@ -162,12 +197,13 @@ def _train_single_model(
             test_corpus,
             texts,
             id2word,
-            compute_coherence=compute_coherence
+            compute_coherence=compute_coherence,
         )
 
         # Save model to disk if path provided (memory optimization)
         if save_path:
             from pathlib import Path
+
             save_dir = Path(save_path)
             save_dir.mkdir(parents=True, exist_ok=True)
             model_file = save_dir / f"lda_model_{num_topics}_topics.gz"
@@ -180,7 +216,7 @@ def _train_single_model(
 
     except Exception as e:
         logger.error(f"Failed to train model with {num_topics} topics: {e}")
-        return None, {'perplexity': float('inf')}, num_topics
+        return None, {"perplexity": float("inf")}, num_topics
 
 
 def optimize_topic_number(
@@ -224,13 +260,16 @@ def optimize_topic_number(
     # Setup save directory if needed
     if save_models and save_dir:
         from pathlib import Path
+
         Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    topic_numbers = list(range(
-        topic_range["start"],
-        topic_range["limit"],
-        topic_range["step"],
-    ))
+    topic_numbers = list(
+        range(
+            topic_range["start"],
+            topic_range["limit"],
+            topic_range["step"],
+        )
+    )
 
     # Prepare arguments for parallel processing
     train_args = [
@@ -250,17 +289,19 @@ def optimize_topic_number(
     # Determine number of processes (cap at 8 for memory)
     num_processes = min(num_cores, mp.cpu_count(), 8)
 
+    # Set NumExpr thread count to match our process limit
+    ne.set_num_threads(min(num_processes, 8))
+
     # Track results
     all_metrics = {}
     best_model = None
-    best_perplexity = float('inf')
+    best_perplexity = float("inf")
     best_num_topics = topic_numbers[0]
 
     with ProcessPoolExecutor(max_workers=num_processes) as executor:
         # Submit all training tasks
         future_to_topic = {
-            executor.submit(_train_single_model, args): args[0]
-            for args in train_args
+            executor.submit(_train_single_model, args): args[0] for args in train_args
         }
 
         # Process results as they complete
@@ -274,7 +315,7 @@ def optimize_topic_number(
 
                 # Store metrics
                 all_metrics[num_topics] = metrics
-                current_perplexity = metrics.get('perplexity', float('inf'))
+                current_perplexity = metrics.get("perplexity", float("inf"))
 
                 # Track best model (based on perplexity only)
                 if current_perplexity < best_perplexity:
@@ -286,7 +327,10 @@ def optimize_topic_number(
                     if save_models and model is None:
                         # Model was saved to disk, load it
                         from pathlib import Path
-                        model_file = Path(save_dir) / f"lda_model_{num_topics}_topics.gz"
+
+                        model_file = (
+                            Path(save_dir) / f"lda_model_{num_topics}_topics.gz"
+                        )
                         best_model = models.LdaModel.load(str(model_file))
                     else:
                         best_model = model
