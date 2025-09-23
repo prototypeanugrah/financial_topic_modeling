@@ -21,6 +21,10 @@ from tqdm.contrib.concurrent import process_map
 
 logger = logging.getLogger(__name__)
 
+# Global worker variables for efficient spaCy initialization
+worker_nlp = None
+worker_allowed_postags = None
+
 
 # Preprocess the text data
 def basic_preprocessing(text: str) -> str:
@@ -260,11 +264,6 @@ def timer_decorator(func):
     return wrapper
 
 
-# Global worker variables for efficient spaCy initialization
-worker_nlp = None
-worker_allowed_postags = None
-
-
 def init_worker(
     spacy_model: str, spacy_disabled: List[str], allowed_postags: List[str]
 ):
@@ -421,6 +420,7 @@ def make_trigrams(
 def pre_processing_helper(
     texts: List[List[str]],
     mode: str,
+    config: Dict,
 ) -> Tuple[
     corpora.Dictionary,  # dictionary
     List[List[Tuple[int, int]]],  # bow_corpus
@@ -430,68 +430,18 @@ def pre_processing_helper(
     dic = corpora.Dictionary(texts)
     logger.info("Number of unique tokens in %s mode: %d", mode, len(dic))
 
-    # Debug: Check for numeric-like tokens in dictionary
-    numeric_like_tokens = []
-    for token in dic.values():
-        if re.match(r"^[oO0-9]+$", token) or token in ["o", "oo", "ooo", "oooo"]:
-            numeric_like_tokens.append(token)
-
-    if numeric_like_tokens:
-        logger.warning(
-            "Found %d numeric-like tokens in dictionary before filtering: %s",
-            len(numeric_like_tokens),
-            numeric_like_tokens[:20],
-        )
-
-    # Filter out tokens that appear in less than 2 documents or more than 80%
+    # Filter out tokens that appear in less than 3 documents or more than 80%
     # of documents
-    dic.filter_extremes(no_below=2, no_above=0.8, keep_n=100000)
+    dic.filter_extremes(
+        no_below=config.get("filter_extremes", {}).get("no_below", 3),
+        no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
+        keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
+    )
     logger.info(
         "Number of unique tokens after filtering in %s mode: %d",
         mode,
         len(dic),
     )
-
-    # Debug: Check for numeric-like tokens in dictionary after filtering
-    numeric_like_tokens_after = []
-    for token in dic.values():
-        if re.match(r"^[oO0-9]+$", token) or token in ["o", "oo", "ooo", "oooo"]:
-            numeric_like_tokens_after.append(token)
-
-    if numeric_like_tokens_after:
-        logger.warning(
-            "Found %d numeric-like tokens in dictionary AFTER filtering: %s",
-            len(numeric_like_tokens_after),
-            numeric_like_tokens_after[:20],
-        )
-
-        # Apply dictionary post-filtering to remove numeric-like tokens
-        logger.info(
-            "Applying post-filtering to remove numeric-like patterns from dictionary"
-        )
-
-        # Get token IDs to remove
-        numeric_token_ids = []
-        for token_id, token in dic.items():
-            if re.match(r"^[oO0-9]+$", token) or token in [
-                "o",
-                "oo",
-                "ooo",
-                "oooo",
-                "ooooo",
-            ]:
-                numeric_token_ids.append(token_id)
-
-        # Filter out the numeric token IDs
-        if numeric_token_ids:
-            logger.info(
-                "Removing %d numeric-like tokens from dictionary",
-                len(numeric_token_ids),
-            )
-            dic.filter_tokens(bad_ids=numeric_token_ids)
-
-        # Log updated dictionary size
-        logger.info("Dictionary size after numeric post-filtering: %d", len(dic))
 
     bc = [dic.doc2bow(text) for text in texts]
 
@@ -632,7 +582,6 @@ def pre_processing_gensim(
         process_args = [(doc, stop_words) for doc in batch_documents]
 
         # Use ProcessPoolExecutor for CPU-bound preprocessing with spaCy worker initialization
-        parallel_start = time.time()
         with ProcessPoolExecutor(
             max_workers=num_cores,
             initializer=init_worker,
@@ -649,21 +598,6 @@ def pre_processing_gensim(
                 desc="Processing documents",
                 chunksize=1,
             )
-        parallel_end = time.time()
-        logger.info(
-            "Completed parallel preprocessing of %d documents",
-            len(processed_batch),
-        )
-
-        parallel_time = parallel_end - parallel_start
-        logger.info(
-            "Parallel processing completed in %.2f seconds",
-            parallel_time,
-        )
-        logger.info(
-            "Average time per document: %.2f seconds",
-            parallel_time / len(batch_documents),
-        )
 
         # Lemmatization already done in worker processes
         all_texts.extend(processed_batch)  # Type: List[List[str]]
@@ -733,7 +667,7 @@ def pre_processing_gensim(
         dictionary_gensim,
         bow_corpus_gensim,
         tfidf_corpus_gensim,
-    ) = pre_processing_helper(all_texts, mode)
+    ) = pre_processing_helper(all_texts, mode, config)
 
     # Validate preprocessing output
     if not validate_preprocessing_output(
@@ -754,43 +688,6 @@ def pre_processing_gensim(
             logger.debug("Checkpoint file removed after successful completion")
         except Exception as e:
             logger.warning("Failed to remove checkpoint file: %s", e)
-
-    # Final validation: Check for any remaining numeric-like tokens
-    final_numeric_tokens = []
-    for token in dictionary_gensim.values():
-        if re.match(r"^[oO0-9]+$", token) or token in [
-            "o",
-            "oo",
-            "ooo",
-            "oooo",
-            "ooooo",
-        ]:
-            final_numeric_tokens.append(token)
-
-    if final_numeric_tokens:
-        logger.error(
-            "CRITICAL: Found %d numeric-like tokens in FINAL dictionary: %s",
-            len(final_numeric_tokens),
-            final_numeric_tokens[:20],
-        )
-        logger.error(
-            "This indicates the filtering pipeline has failed - consider manual review"
-        )
-    else:
-        logger.info(
-            "✓ Validation passed: No numeric-like tokens found in final dictionary"
-        )
-
-    # Additional validation: Check token quality
-    single_char_tokens = [
-        token for token in dictionary_gensim.values() if len(token) == 1
-    ]
-    if single_char_tokens:
-        logger.warning(
-            "Found %d single-character tokens: %s",
-            len(single_char_tokens),
-            single_char_tokens[:10],
-        )
 
     return (
         dictionary_gensim,
@@ -856,7 +753,7 @@ def validate_preprocessing_output(
         min_length = min(doc_lengths)
 
         logger.info(
-            "[%s] Document stats - Min: %d, Max: %d, Avg: %.1f",
+            "[%s] Document length stats - Min: %d, Max: %d, Avg: %.1f",
             mode,
             min_length,
             max_length,

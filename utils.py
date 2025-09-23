@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator, List, Tuple
 import matplotlib.pyplot as plt
 import requests
 import yaml
+from gensim import corpora
 from tqdm import tqdm
 
 # Setup logging - modify to only show INFO level
@@ -244,6 +245,7 @@ def load_data_sequential(
 def save_model_results(
     output_dir: Path,
     lda_model: Any,
+    corpus: Any,
     perf_metrics: Dict[str, Dict],
     config: Dict,
 ) -> None:
@@ -271,7 +273,12 @@ def save_model_results(
                 f.write(f"{topic}\n")
 
         # Save model
-        lda_model.save(str(output_dir / "lda_model"))
+        lda_model.save(
+            str(output_dir / "lda_model.gensim")
+        )  # This includes id2word (dictionary), expElogbeta (word_topic_distribution), internal state
+
+        # Save the corpus
+        corpora.MmCorpus.serialize(str(output_dir / "lda_model.bow_corpus.mm"), corpus)
 
 
 def plot_perplexity_scores(

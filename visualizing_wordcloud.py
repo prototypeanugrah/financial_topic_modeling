@@ -1,13 +1,9 @@
 # 1. Wordcloud of Top N words in each topic
 import math
-import random
-import numpy as np
 import os
 
 from matplotlib import pyplot as plt
-from wordcloud import WordCloud, STOPWORDS
-import matplotlib.colors as mcolors
-from nltk.corpus import stopwords
+from wordcloud import WordCloud
 
 
 def visualize_wordcloud(lda_model, output_path, config):
@@ -43,24 +39,6 @@ def visualize_wordcloud(lda_model, output_path, config):
             for word, weight in topic:
                 topic_words[word] = weight
             topics_words[idx] = topic_words
-    # Check if it's a scikit-learn model
-    elif hasattr(lda_model, "components_"):
-        # Get feature names from the vectorizer
-        feature_names = config.get("feature_names", [])
-        if len(feature_names) == 0:
-            raise ValueError(
-                "For scikit-learn models, feature_names must be provided in config"
-            )
-
-        # Get top words for each topic
-        for topic_idx, topic in enumerate(lda_model.components_):
-            topic_words = {}
-            top_indices = topic.argsort()[: -config.get("n_top_words", 10) - 1 : -1]
-            for idx in top_indices:
-                word = feature_names[idx]
-                weight = topic[idx]
-                topic_words[word] = weight
-            topics_words[topic_idx] = topic_words
     else:
         raise ValueError("Unsupported LDA model type")
 

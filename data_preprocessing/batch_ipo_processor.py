@@ -19,14 +19,14 @@ def parse_args():
         "--input_csv",
         type=str,
         required=False,
-        default="data/rep180_v2_initial(in).csv",
+        default="data/latest_ipo_s1_filings_updated.csv",
         help="Input CSV file",
     )
     parser.add_argument(
         "--output_prefix",
         type=str,
         required=False,
-        default="ipo_reports_metadata",
+        default="data/ipo_reports_metadata_v3",
         help="Output prefix",
     )
     parser.add_argument(
@@ -47,7 +47,7 @@ def parse_args():
         "--raw_reports_dir",
         type=str,
         required=False,
-        default="data/raw_reports",
+        default="data/raw_reports_v3",
         help="Raw reports directory",
     )
     return parser.parse_args()
@@ -75,7 +75,8 @@ class BatchIPOProcessor:
         try:
             # Read CSV with latin-1 encoding to handle special characters
             df = pd.read_csv(csv_path, encoding="latin-1")
-            unique_urls = df["url"].drop_duplicates().tolist()
+
+            unique_urls = df["filenames1"].tolist()
             logger.info(
                 f"Loaded {len(unique_urls)} unique URLs from {len(df)} total rows"
             )

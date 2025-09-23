@@ -1,8 +1,9 @@
 import logging
 import re
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import aiohttp
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -52,17 +53,35 @@ class SECFilingParser:
     """Enhanced SEC filing parser with multi-document support"""
 
     def __init__(self):
-        self.supported_forms = ["S-1", "S-1/A", "424B3", "S-3", "F-1", "424B4", "424B5"]
         self.ipo_priority_forms = ["S-1", "S-1/A"]
 
-    def parse_url_data(self, url_path: str):
+    async def parse_url_data_async(self, url_path: str) -> Optional[ParsedIPOData]:
+        try:
+            headers = {
+                "User-Agent": "Sample Company Name AdminContact@company.com",
+                "Host": "www.sec.gov",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url_path, headers=headers, timeout=10
+                ) as response:
+                    response.raise_for_status()
+                    content = await response.text()
+                    documents = self.split_documents(content)
+                    selected_doc, form_type, form_text = self.select_document(documents)
+                    return self.parse_document(selected_doc, form_type, form_text)
+        except Exception as e:
+            logger.error(f"Error parsing url {url_path}: {str(e)}")
+            raise
+
+    def parse_url_data(self, url_path: str) -> Optional[ParsedIPOData]:
         try:
             headers = {
                 "User-Agent": "Sample Company Name AdminContact@company.com",
                 "Host": "www.sec.gov",
             }
 
-            data = requests.get(url_path, headers=headers, timeout=10)
+            data = requests.get(url_path, headers=headers, timeout=15)
             data.raise_for_status()
 
             # Split into documents
@@ -70,16 +89,20 @@ class SECFilingParser:
             # logger.info(f"Found {len(documents)} document(s) in file")
 
             # Select the appropriate document
-            selected_doc = self.select_document(documents)
+            selected_doc, form_type, form_text = self.select_document(documents)
 
             # Parse the selected document
-            return self.parse_document(selected_doc)
+            return self.parse_document(selected_doc, form_type, form_text)
+
+        except ValueError as exc:
+            logger.info("No target filing found in %s: %s", url_path, exc)
+            return None
 
         except Exception as e:
             logger.error(f"Error parsing url {url_path}: {str(e)}")
             raise
 
-    def parse_file(self, file_path: str) -> ParsedIPOData:
+    def parse_file(self, file_path: str) -> Optional[ParsedIPOData]:
         """Main parsing method"""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -90,10 +113,14 @@ class SECFilingParser:
             # logger.info(f"Found {len(documents)} document(s) in file")
 
             # Select the appropriate document
-            selected_doc = self.select_document(documents)
+            selected_doc, form_type, form_text = self.select_document(documents)
 
             # Parse the selected document
-            return self.parse_document(selected_doc)
+            return self.parse_document(selected_doc, form_type, form_text)
+
+        except ValueError as exc:
+            logger.info("No target filing found in %s: %s", file_path, exc)
+            return None
 
         except Exception as e:
             logger.error(f"Error parsing file {file_path}: {str(e)}")
@@ -101,60 +128,168 @@ class SECFilingParser:
 
     def split_documents(self, content: str) -> List[str]:
         """Split content into individual SEC documents"""
-        # Split by SEC-DOCUMENT tags
-        documents = re.split(r"<SEC-DOCUMENT[^>]*>", content)
 
-        # Remove empty documents and the content before first document
-        valid_documents = []
-        for doc in documents[1:]:  # Skip content before first <SEC-DOCUMENT>
-            if doc.strip() and "SEC-HEADER" in doc:
-                valid_documents.append(doc)
+        content = content or ""
 
-        return valid_documents if valid_documents else [content]
+        try:
+            sec_documents = re.findall(
+                r"<SEC-DOCUMENT[^>]*>.*?</SEC-DOCUMENT>",
+                content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        except re.error as exc:
+            logger.error("Failed to locate SEC-DOCUMENT blocks: %s", exc)
+            sec_documents = []
+
+        cleaned_documents: List[str] = []
+
+        for sec_doc in sec_documents:
+            inner_doc = re.sub(
+                r"^<SEC-DOCUMENT[^>]*>", "", sec_doc, flags=re.IGNORECASE
+            )
+            inner_doc = re.sub(
+                r"</SEC-DOCUMENT>\s*$", "", inner_doc, flags=re.IGNORECASE
+            )
+            if inner_doc.strip():
+                cleaned_documents.append(inner_doc)
+
+        if cleaned_documents:
+            return cleaned_documents
+
+        try:
+            document_sections = re.findall(
+                r"<DOCUMENT>.*?</DOCUMENT>",
+                content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        except re.error as exc:
+            logger.error("Failed to locate DOCUMENT blocks: %s", exc)
+            document_sections = []
+
+        if document_sections:
+            return document_sections
+
+        stripped_content = content.strip()
+        return [stripped_content] if stripped_content else []
 
     def get_form_type(self, document: str) -> Optional[str]:
-        """Extract form type from document"""
-        match = re.search(r"CONFORMED SUBMISSION TYPE:\s+([^\r\n]+)", document)
-        if match:
-            form_type = match.group(1).strip()
-            return form_type
+        """Extract form type from document using <TYPE> tag"""
+        # First try to find <TYPE> tag in document sections
+        sections = re.findall(
+            r"(<DOCUMENT>.*?</DOCUMENT>)",
+            document,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        for section in sections:
+            type_match = re.search(
+                r"<TYPE>\s*([^\n\r<]+)", section, flags=re.IGNORECASE
+            )
+            if type_match:
+                form_type = type_match.group(1).strip()
+                return form_type
+
         return None
 
-    def select_document(self, documents: List[str]) -> str:
-        """Select the appropriate document based on priority rules"""
-        if len(documents) == 1:
-            return documents[0]
+    def select_document(
+        self, documents: List[str]
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+        """Select SEC document containing target filing type"""
 
-        # Look for IPO priority forms first (S-1, S-1/A)
-        for form_type in self.ipo_priority_forms:
-            for doc in documents:
-                doc_form = self.get_form_type(doc)
-                if doc_form and doc_form.strip() == form_type:
-                    # logger.info(f"Selected first {form_type} document")
-                    return doc
+        for document in documents:
+            section_types, section_texts = self._extract_target_sections(document)
+            if section_texts:
+                combined_types = (
+                    "|".join(section_types)
+                    if len(section_types) > 1
+                    else section_types[0]
+                )
+                combined_text = "\n\n".join(section_texts)
+                return document, combined_types, combined_text
 
-        # If no S-1 or S-1/A found, return the first supported document
-        for doc in documents:
-            doc_form = self.get_form_type(doc)
-            if doc_form:
-                for supported_form in self.supported_forms:
-                    if doc_form.strip() == supported_form:
-                        # logger.info(f"Selected {doc_form} document")
-                        return doc
+        if documents:
+            logger.info(
+                "No S-1 or S-1/A section found; returning document without target form"
+            )
+            return documents[0], None, None
 
-        # Fallback to first document
-        logger.warning("No recognized form type found, using first document")
-        return documents[0]
+        raise ValueError("No documents found in filing")
 
-    def parse_document(self, document: str) -> ParsedIPOData:
+    def _extract_target_sections(self, document: str) -> Tuple[List[str], List[str]]:
+        """Return ordered lists of form types and text blocks for target forms"""
+
+        try:
+            sections = re.findall(
+                r"(<DOCUMENT>.*?</DOCUMENT>)",
+                document,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        except re.error as exc:
+            logger.error("Failed to split document sections: %s", exc)
+            sections = []
+
+        if not sections:
+            stripped = document.strip()
+            sections = [stripped] if stripped else []
+
+        target_map = {form.upper(): form for form in self.ipo_priority_forms}
+        matched_sections: List[Tuple[int, int, str, str]] = []
+
+        for position, section in enumerate(sections):
+            type_match = re.search(
+                r"<TYPE>\s*([^\n\r<]+)", section, flags=re.IGNORECASE
+            )
+            if not type_match:
+                continue
+
+            raw_type = type_match.group(1).strip()
+            canonical = target_map.get(raw_type.upper())
+            if not canonical:
+                continue
+
+            text_match = re.search(
+                r"<TEXT>(.*?)</TEXT>", section, flags=re.DOTALL | re.IGNORECASE
+            )
+            if text_match:
+                section_text = text_match.group(1)
+            else:
+                section_text = section[type_match.end() :]
+                section_text = re.sub(
+                    r"</DOCUMENT>\s*$",
+                    "",
+                    section_text,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                section_text = section_text.strip()
+                if not section_text:
+                    continue
+
+            priority_index = self.ipo_priority_forms.index(canonical)
+            matched_sections.append((priority_index, position, canonical, section_text))
+
+        if not matched_sections:
+            return [], []
+
+        # Sort by priority (S-1, then S-1/A) while preserving natural order per group
+        matched_sections.sort(key=lambda item: (item[0], item[1]))
+
+        section_types = [item[2] for item in matched_sections]
+        section_texts = [item[3] for item in matched_sections]
+        return section_types, section_texts
+
+    def parse_document(
+        self,
+        document: str,
+        selected_form_type: Optional[str],
+        selected_form_text: Optional[str],
+    ) -> ParsedIPOData:
         """Parse a single SEC document"""
-        # Extract header and content sections
-        header_match = re.search(r"<SEC-HEADER>(.*?)</SEC-HEADER>", document, re.DOTALL)
+        # Extract header and content sections (header can be absent)
+        header_match = re.search(
+            r"<SEC-HEADER>(.*?)</SEC-HEADER>", document, re.DOTALL | re.IGNORECASE
+        )
 
-        if not header_match:
-            raise ValueError("No SEC-HEADER found in document")
-
-        header_content = header_match.group(1)
+        header_content = header_match.group(1) if header_match else ""
 
         # Parse header information
         company_info = self.parse_company_info(header_content)
@@ -164,8 +299,12 @@ class SECFilingParser:
         parsed_data = ParsedIPOData(
             company_info=company_info,
             filing_info=filing_info,
-            raw_document_type=self.get_form_type(document),
+            raw_document_type=(selected_form_type or self.get_form_type(document)),
         )
+
+        if selected_form_text:
+            cleaned_text = self.extract_full_text(selected_form_text)
+            parsed_data.full_text_content = cleaned_text
 
         return parsed_data
 
@@ -213,10 +352,10 @@ class SECFilingParser:
         if match:
             filing_info.accession_number = match.group(1).strip()
 
-        # Form type
-        match = re.search(r"CONFORMED SUBMISSION TYPE:\s+(.+)", header)
-        if match:
-            filing_info.form_type = match.group(1).strip()
+        # # Form type
+        # match = re.search(r"CONFORMED SUBMISSION TYPE:\s+(.+)", header)
+        # if match:
+        #     filing_info.form_type = match.group(1).strip()
 
         # Filing date
         match = re.search(r"FILED AS OF DATE:\s+(\d{8})", header)
@@ -344,3 +483,115 @@ class SECFilingParser:
             filtered_dict["raw_document_url"] = None
 
         return pd.DataFrame([filtered_dict])
+
+
+def main():
+    """Main function to run the script standalone"""
+    import argparse
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        description="Parse SEC filing documents and extract form type and metadata"
+    )
+    parser.add_argument(
+        "--file_path", help="Path to the SEC filing document (local file or URL)"
+    )
+    parser.add_argument(
+        "--show-all",
+        action="store_true",
+        help="Show all parsed metadata, not just form type",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    args = parser.parse_args()
+
+    # Configure logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Initialize parser
+    parser_instance = SECFilingParser()
+
+    try:
+        # Determine if it's a URL or local file
+        if args.file_path.startswith(("http://", "https://")):
+            print(f"Parsing URL: {args.file_path}")
+            parsed_data = parser_instance.parse_url_data(args.file_path)
+        elif args.file_path.startswith("edgar/"):
+            # add the base url
+            args.file_path = "https://sec.gov/Archives/" + args.file_path
+            print(f"Parsing EDGAR URL: {args.file_path}")
+            parsed_data = parser_instance.parse_url_data(args.file_path)
+        else:
+            file_path = Path(args.file_path)
+            if not file_path.exists():
+                print(f"Error: File not found: {args.file_path}")
+                sys.exit(1)
+            print(f"Parsing file: {args.file_path}")
+            parsed_data = parser_instance.parse_file(str(file_path))
+
+        if parsed_data is None:
+            print("No valid SEC filing found in the document.")
+            sys.exit(1)
+
+        # Display results
+        print("\n" + "=" * 60)
+        print("PARSING RESULTS")
+        print("=" * 60)
+
+        # Always show form type
+        form_type = parsed_data.filing_info.form_type or parsed_data.raw_document_type
+        print(f"Form Type: {form_type}")
+
+        if args.show_all:
+            print("\n" + "-" * 40)
+            print("COMPANY INFORMATION")
+            print("-" * 40)
+            company = parsed_data.company_info
+            print(f"Company Name: {company.company_name}")
+            print(f"CIK: {company.cik}")
+            print(f"Ticker Symbol: {company.ticker_symbol}")
+            print(f"SIC Code: {company.sic_code}")
+            print(f"SIC Description: {company.sic_description}")
+            print(f"IRS Number: {company.irs_number}")
+            print(f"State of Incorporation: {company.state_of_incorporation}")
+
+            print("\n" + "-" * 40)
+            print("FILING INFORMATION")
+            print("-" * 40)
+            filing = parsed_data.filing_info
+            print(f"Accession Number: {filing.accession_number}")
+            print(f"Form Type: {filing.form_type}")
+            print(f"Filing Date: {filing.filing_date}")
+            print(f"Acceptance DateTime: {filing.acceptance_datetime}")
+            print(f"SEC File Number: {filing.sec_file_number}")
+            print(f"Film Number: {filing.film_number}")
+            print(f"SEC Act: {filing.sec_act}")
+
+            print("\n" + "-" * 40)
+            print("DOCUMENT INFORMATION")
+            print("-" * 40)
+            print(f"Raw Document Type: {parsed_data.raw_document_type}")
+            if parsed_data.full_text_content:
+                text_length = len(parsed_data.full_text_content)
+                print(f"Full Text Content Length: {text_length:,} characters")
+                print("Full Text Preview (first 200 chars):")
+                print(f"'{parsed_data.full_text_content[:200]}...'")
+            else:
+                print("Full Text Content: Not extracted")
+
+        print("\n" + "=" * 60)
+        print("Parsing completed successfully!")
+
+    except Exception as e:
+        print(f"Error parsing document: {str(e)}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

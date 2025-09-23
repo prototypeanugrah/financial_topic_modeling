@@ -5,6 +5,7 @@ This file contains the functions for training the LDA model using Gensim.
 import logging
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numexpr as ne
@@ -12,6 +13,7 @@ import numpy as np
 from gensim import models
 from gensim.corpora import Dictionary
 from gensim.models import CoherenceModel
+from gensim.models.callbacks import PerplexityMetric
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 def model_training(
     topic_num: int,
-    corpus: List[List[Tuple[int, int]]],
+    train_corpus: List[List[Tuple[int, int]]],
+    test_corpus: List[List[Tuple[int, int]]],
     id2word: Dictionary,
     model_params: Dict[str, Any] = None,
 ) -> models.LdaModel:
@@ -40,7 +43,7 @@ def model_training(
     """
     if topic_num <= 0:
         raise ValueError("topic_num must be positive")
-    if not corpus:
+    if not train_corpus:
         raise ValueError("corpus cannot be empty")
 
     if model_params is None:
@@ -52,10 +55,18 @@ def model_training(
     # Override num_topics with topic_num
     params["num_topics"] = topic_num
 
+    if test_corpus is not None:
+        perplexity_callback = PerplexityMetric(
+            corpus=test_corpus,
+            logger="shell",
+        )
+
     try:
         lda_model = models.LdaModel(
-            corpus=corpus,
+            corpus=train_corpus,
+            callbacks=[perplexity_callback] if test_corpus is not None else None,
             id2word=id2word,
+            eval_every=1,
             **params,
         )
         return lda_model
@@ -156,6 +167,7 @@ def _train_single_model(
         Dictionary,
         Dict[str, Any],
         List[List[str]],
+        List[List[Tuple[int, int]]],  # train_corpus
         List[List[Tuple[int, int]]],  # test_corpus
         bool,  # compute_coherence flag
         str,  # Optional save path
@@ -177,6 +189,7 @@ def _train_single_model(
         id2word,
         model_params,
         texts,
+        train_corpus,
         test_corpus,
         compute_coherence,
         save_path,
@@ -185,32 +198,33 @@ def _train_single_model(
     try:
         # Train model
         model = model_training(
-            num_topics,
-            train_corpus,
-            id2word,
-            model_params,
+            topic_num=num_topics,
+            train_corpus=train_corpus,
+            test_corpus=test_corpus,
+            id2word=id2word,
+            model_params=model_params,
         )
 
         # Compute metrics on test set
         metrics = performance_metrics(
-            model,
-            test_corpus,
-            texts,
-            id2word,
+            model=model,
+            corpus=test_corpus,
+            texts=texts,
+            id2word=id2word,
             compute_coherence=compute_coherence,
         )
 
-        # Save model to disk if path provided (memory optimization)
-        if save_path:
-            from pathlib import Path
+        # # Save model to disk if path provided (memory optimization)
+        # if save_path:
+        #     from pathlib import Path
 
-            save_dir = Path(save_path)
-            save_dir.mkdir(parents=True, exist_ok=True)
-            model_file = save_dir / f"lda_model_{num_topics}_topics.gz"
-            model.save(str(model_file))
-            logger.debug(f"Saved model with {num_topics} topics to {model_file}")
-            # Return None instead of model to save memory
-            return None, metrics, num_topics
+        #     save_dir = Path(save_path)
+        #     save_dir.mkdir(parents=True, exist_ok=True)
+        #     model_file = save_dir / f"lda_model_{num_topics}_topics.gz"
+        #     model.save(str(model_file))
+        #     logger.debug(f"Saved model with {num_topics} topics to {model_file}")
+        #     # Return None instead of model to save memory
+        #     return None, metrics, num_topics
 
         return model, metrics, num_topics
 
@@ -221,12 +235,12 @@ def _train_single_model(
 
 def optimize_topic_number(
     train_corpus: List[List[Tuple[int, int]]],
+    test_corpus: List[List[Tuple[int, int]]],
     id2word: Dictionary,
     texts: List[List[str]],
     topic_range: Dict[str, int],
     num_cores: int,
     model_params: Dict[str, Any] = None,
-    test_corpus: List[List[Tuple[int, int]]] = None,
     save_models: bool = False,
     save_dir: str = None,
     compute_coherence: bool = True,
@@ -279,7 +293,8 @@ def optimize_topic_number(
             id2word,
             model_params,
             texts,
-            test_corpus if test_corpus else train_corpus,
+            train_corpus,
+            test_corpus,
             compute_coherence,
             save_dir if save_models else None,
         )
@@ -359,3 +374,30 @@ def optimize_topic_number(
     )
 
     return best_model, all_metrics, best_num_topics
+
+
+def document_topic_distribution(
+    model: models.LdaModel,
+    train_corpus: List[List[Tuple[int, int]]],
+    test_corpus: List[List[Tuple[int, int]]],
+    output_dir: Path,
+) -> None:
+    """
+    Calculate document topic distribution.
+
+    Args:
+        model: Trained LDA model
+        corpus: Document corpus in bow format
+
+    Returns:
+        None
+    """
+    document_topics_train = model.get_document_topics(train_corpus)
+    document_topics_test = model.get_document_topics(test_corpus)
+    with open(output_dir / "document_topics_train.txt", "w", encoding="utf-8") as f:
+        for document_topic in document_topics_train:
+            f.write(f"{document_topic}\n")
+    with open(output_dir / "document_topics_test.txt", "w", encoding="utf-8") as f:
+        for document_topic in document_topics_test:
+            f.write(f"{document_topic}\n")
+    return document_topics_train, document_topics_test

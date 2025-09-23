@@ -25,6 +25,12 @@ def main():
         help="Path to configuration file",
     )
     parser.add_argument(
+        "-i",
+        "--input_dir",
+        default="data/raw_reports_v3",
+        help="Path to input directory",
+    )
+    parser.add_argument(
         "-n",
         "--num_docs",
         type=int,
@@ -66,7 +72,7 @@ def main():
     parser.add_argument(
         "--compute_coherence",
         action="store_true",
-        help="Whether to compute coherence metrics. If not provided, the coherence metrics will be computed. If provided, the coherence metrics will be computed.",
+        help="Whether to compute coherence metrics. If not provided, the coherence metrics will not be computed. If provided, the coherence metrics will be computed.",
     )
 
     parser.add_argument(
@@ -94,9 +100,6 @@ def main():
     config = utils.load_config(args.config)
 
     try:
-        # Initialize variables
-        batch_size = args.batch_size
-
         # Setup output directory
         output_dir = utils.setup_output_directory(config)
         logger.info("Results will be saved to %s", output_dir)
@@ -113,7 +116,7 @@ def main():
             # Load all documents for CV
             all_documents = utils.load_all_documents(
                 num_docs=args.num_docs,
-                input_dir="data/raw_reports",
+                input_dir=args.input_dir,
             )
 
             # Run cross-validation
@@ -136,10 +139,10 @@ def main():
         # Load data for standard train/test split
         train_documents_generator, test_documents_generator = (
             utils.load_files_in_batches(
-                batch_size=batch_size,
+                batch_size=args.batch_size,
                 num_docs=args.num_docs,
                 test_perc=args.test_perc,
-                input_dir="data/raw_reports",
+                input_dir=args.input_dir,
             )
         )
 
@@ -179,15 +182,15 @@ def main():
                 output_dir / "intermediate_models" if save_models_to_disk else None
             )
 
-            # Run optimization with new interface
+            # Run optimization
             topic_model, all_metrics, best_topic_num = (
                 lda_model_gensim.optimize_topic_number(
                     train_corpus=train_bow_corpus,
+                    test_corpus=test_bow_corpus,
                     id2word=train_dictionary,
                     texts=train_texts,
                     topic_range=config["lda"]["topic_range"],
                     model_params=config["lda"]["gensim"],
-                    test_corpus=test_bow_corpus,
                     num_cores=args.num_cores,
                     save_models=save_models_to_disk,
                     save_dir=str(model_save_dir) if model_save_dir else None,
@@ -234,7 +237,8 @@ def main():
             )
             topic_model = lda_model_gensim.model_training(
                 topic_num=args.num_topics,
-                corpus=train_bow_corpus,
+                train_corpus=train_bow_corpus,
+                test_corpus=test_bow_corpus,
                 id2word=train_dictionary,
                 model_params=config["lda"]["gensim"],
             )
@@ -267,25 +271,47 @@ def main():
         # Save results
         logger.info("Saving results")
         utils.save_model_results(
-            output_dir,
-            topic_model,
-            perf_metrics,
-            config,
+            output_dir=output_dir,
+            lda_model=topic_model,
+            corpus=train_bow_corpus,
+            perf_metrics=perf_metrics,
+            config=config,
         )
+
+        # Plot perplexity scores
+        if args.optimize_topics:
+            utils.plot_perplexity_scores(
+                topic_range=config["lda"]["topic_range"],
+                perplexity_scores=perplexity_scores,
+                output_dir=output_dir,
+                mode="test",
+            )
 
         # Generate visualizations
         if config["output"]["save_visualizations"]:
             logger.info("Generating visualizations")
 
             visualize_wordcloud(
-                topic_model,
-                output_dir / "wordcloud.png",
-                config["visualization"]["wordcloud"],
+                lda_model=topic_model,
+                output_path=output_dir / "wordcloud.png",
+                config=config["visualization"]["wordcloud"],
             )
 
         # Analyze word frequencies
         logger.info("Analyzing word frequencies")
-        utils.analyze_word_frequencies(output_dir / "topics.txt", output_dir)
+        utils.analyze_word_frequencies(
+            file_path=output_dir / "topics.txt",
+            output_dir=output_dir,
+        )
+
+        # Save document topic distribution
+        logger.info("Saving document topic distribution")
+        lda_model_gensim.document_topic_distribution(
+            model=topic_model,
+            train_corpus=train_bow_corpus,
+            test_corpus=test_bow_corpus,
+            output_dir=output_dir,
+        )
 
         logger.info("Pipeline completed successfully")
 
