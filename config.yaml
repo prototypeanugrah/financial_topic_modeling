@@ -16,6 +16,10 @@ preprocessing:
     - ner
   debug:
     - enabled: false
+  filter_extremes:
+    no_below: 15
+    no_above: 0.6
+    keep_n: 100000
 
 # LDA model settings
 lda:
@@ -27,11 +31,12 @@ lda:
   gensim:
     random_state: 100
     update_every: 1
-    chunksize: 1000
-    iterations: 200 # 400 for final run
-    passes: 10 # 20 for final run
+    chunksize: 8
+    iterations: 100 # 400 for final run
+    passes: 5 # 20 for final run
     alpha: auto
     eta: auto
+    # eval_every: None
     per_word_topics: false
   sklearn:
     n_components: 20
