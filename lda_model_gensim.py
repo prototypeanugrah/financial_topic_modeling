@@ -13,7 +13,8 @@ import numpy as np
 from gensim import models
 from gensim.corpora import Dictionary
 from gensim.models import CoherenceModel
-from gensim.models.callbacks import PerplexityMetric
+
+# from gensim.models.callbacks import PerplexityMetric  # Available but not used in current implementation
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -55,18 +56,19 @@ def model_training(
     # Override num_topics with topic_num
     params["num_topics"] = topic_num
 
-    if test_corpus is not None:
-        perplexity_callback = PerplexityMetric(
-            corpus=test_corpus,
-            logger="shell",
-        )
+    # Note: PerplexityMetric callback is available but not used in current implementation
+    # if test_corpus is not None:
+    #     perplexity_callback = PerplexityMetric(
+    #         corpus=test_corpus,
+    #         logger="shell",
+    #     )
 
     try:
         lda_model = models.LdaModel(
             corpus=train_corpus,
-            callbacks=[perplexity_callback] if test_corpus is not None else None,
+            # callbacks=[perplexity_callback] if test_corpus is not None else None,
             id2word=id2word,
-            eval_every=1,
+            eval_every=None,
             **params,
         )
         return lda_model
@@ -205,8 +207,17 @@ def _train_single_model(
             model_params=model_params,
         )
 
+        # Compute metrics on train set
+        train_metrics = performance_metrics(
+            model=model,
+            corpus=train_corpus,
+            texts=texts,
+            id2word=id2word,
+            compute_coherence=compute_coherence,
+        )
+
         # Compute metrics on test set
-        metrics = performance_metrics(
+        test_metrics = performance_metrics(
             model=model,
             corpus=test_corpus,
             texts=texts,
@@ -226,11 +237,16 @@ def _train_single_model(
         #     # Return None instead of model to save memory
         #     return None, metrics, num_topics
 
-        return model, metrics, num_topics
+        return model, train_metrics, test_metrics, num_topics
 
     except Exception as e:
         logger.error(f"Failed to train model with {num_topics} topics: {e}")
-        return None, {"perplexity": float("inf")}, num_topics
+        return (
+            None,
+            {"perplexity": float("inf")},
+            {"perplexity": float("inf")},
+            num_topics,
+        )
 
 
 def optimize_topic_number(
@@ -326,14 +342,19 @@ def optimize_topic_number(
             desc="Optimizing number of topics",
         ):
             try:
-                model, metrics, num_topics = future.result()
+                model, train_metrics, test_metrics, num_topics = future.result()
 
-                # Store metrics
-                all_metrics[num_topics] = metrics
-                current_perplexity = metrics.get("perplexity", float("inf"))
+                # Store metrics - initialize the dict for this num_topics
+                all_metrics[num_topics] = {"train": train_metrics, "test": test_metrics}
+                current_train_perplexity = train_metrics.get("perplexity", float("inf"))
+                current_test_perplexity = test_metrics.get("perplexity", float("inf"))
 
-                # Track best model (based on perplexity only)
-                if current_perplexity < best_perplexity:
+                print(
+                    f"Number of topics: {num_topics}, Train Perplexity: {current_train_perplexity}, Test Perplexity: {current_test_perplexity}"
+                )
+
+                # Track best model (based on train perplexity)
+                if current_train_perplexity < best_perplexity:
                     # Delete previous best model from memory
                     if best_model is not None:
                         del best_model
@@ -350,13 +371,14 @@ def optimize_topic_number(
                     else:
                         best_model = model
 
-                    best_perplexity = current_perplexity
+                    best_perplexity = current_train_perplexity
                     best_num_topics = num_topics
 
                     logger.info(
                         f"New best model: {num_topics} topics, "
-                        f"perplexity={current_perplexity:.2f}, "
-                        f"coherence_c_v={metrics.get('coherence_c_v', 'N/A')}"
+                        f"train_perplexity={current_train_perplexity:.2f}, "
+                        f"coherence_c_v={train_metrics.get('coherence_c_v', 'N/A')}, "
+                        f"test_perplexity={current_test_perplexity:.2f}, "
                     )
                 elif model is not None:
                     # Not the best model, free memory
@@ -378,26 +400,29 @@ def optimize_topic_number(
 
 def document_topic_distribution(
     model: models.LdaModel,
-    train_corpus: List[List[Tuple[int, int]]],
-    test_corpus: List[List[Tuple[int, int]]],
+    corpus: List[List[Tuple[int, int]]],
     output_dir: Path,
+    prefix: str,
+    mode: str,
 ) -> None:
     """
-    Calculate document topic distribution.
+    Calculate document topic distribution with optional prefix.
 
     Args:
         model: Trained LDA model
-        corpus: Document corpus in bow format
+        corpus: Corpus in bow format
+        output_dir: Output directory
+        prefix: Optional prefix for output files
 
     Returns:
         None
     """
-    document_topics_train = model.get_document_topics(train_corpus)
-    document_topics_test = model.get_document_topics(test_corpus)
-    with open(output_dir / "document_topics_train.txt", "w", encoding="utf-8") as f:
-        for document_topic in document_topics_train:
+    document_topics = model.get_document_topics(corpus)
+
+    with open(
+        output_dir / f"{prefix}document_topics_{mode}.txt",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        for document_topic in document_topics:
             f.write(f"{document_topic}\n")
-    with open(output_dir / "document_topics_test.txt", "w", encoding="utf-8") as f:
-        for document_topic in document_topics_test:
-            f.write(f"{document_topic}\n")
-    return document_topics_train, document_topics_test

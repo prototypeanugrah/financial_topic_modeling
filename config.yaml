@@ -17,35 +17,27 @@ preprocessing:
   debug:
     - enabled: false
   filter_extremes:
-    no_below: 15
-    no_above: 0.6
+    no_below: 5 # filter out words that appear in less than 10 documents
+    no_above: 0.8 # filter out words that appear in more than 80% of documents
     keep_n: 100000
 
 # LDA model settings
 lda:
   save_intermediate_models: true  # Save models to disk during optimization to reduce memory usage
   topic_range:
-    start: 5
-    limit: 55 # 55 for final run
-    step: 5
+    start: 5 # start at 5 topics
+    limit: 100 # limit at 50 topics
+    step: 10
   gensim:
     random_state: 100
     update_every: 1
-    chunksize: 8
-    iterations: 100 # 400 for final run
-    passes: 5 # 20 for final run
+    chunksize: 512
+    iterations: 1000
+    passes: 10
     alpha: auto
     eta: auto
     # eval_every: None
     per_word_topics: false
-  sklearn:
-    n_components: 20
-    max_iter: 25
-    learning_method: online
-    learning_decay: 0.5
-    batch_size: 100
-    n_jobs: None
-    random_state: 100
 
 # Visualization settings
 visualization:

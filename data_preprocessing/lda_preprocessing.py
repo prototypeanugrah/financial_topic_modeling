@@ -86,13 +86,7 @@ def basic_preprocessing(text: str) -> str:
     text = re.sub(r"'", "", text)  # Remove apostrophes
     text = re.sub(r"&nbsp;", " ", text)  # Remove &nbsp;
 
-    # Debug: Log sample text before numeric filtering
-    logger.debug("Sample text before numeric filtering: %s", text[:200] if text else "")
-
     text = re.sub(r"[^a-zA-Z]", " ", text)  # Remove non-alphabet characters
-
-    # Debug: Log sample text after numeric filtering
-    logger.debug("Sample text after numeric filtering: %s", text[:200] if text else "")
 
     text = text.lower()  # Convert to lowercase
     text = re.sub(r"\s+", " ", text)  # Remove extra spaces
@@ -302,41 +296,8 @@ def process_document_chunk(
     tokens = list(sent_to_words([text]))[0]
     tokens = remove_stopwords([tokens], list(stop_words))[0]
 
-    # Debug: Log sample tokens before numeric filtering
-    sample_tokens_before = tokens[:20] if tokens else []
-    logger.debug("Sample tokens before numeric filtering: %s", sample_tokens_before)
-
     # Remove tokens that contain numbers
     tokens = [token for token in tokens if not any(char.isdigit() for char in token)]
-
-    # Enhanced filtering for numeric-like patterns (OCR artifacts, etc.)
-    # Remove single-character tokens that look like numbers
-    tokens = [
-        token for token in tokens if not (len(token) == 1 and token.lower() in "oOlI")
-    ]
-
-    # Remove tokens that are purely numeric-like patterns (combinations of o, O, 0-9)
-    tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
-
-    # Remove common OCR artifacts for zeros
-    tokens = [
-        token
-        for token in tokens
-        if token.lower() not in ["o", "oo", "ooo", "oooo", "ooooo"]
-    ]
-
-    # Remove tokens that start or end with common numeric patterns
-    tokens = [
-        token
-        for token in tokens
-        if not (re.match(r"^[oO0-9]", token) and len(token) <= 4)
-    ]
-
-    # Debug: Log sample tokens after enhanced numeric filtering
-    sample_tokens_after = tokens[:20] if tokens else []
-    logger.debug(
-        "Sample tokens after enhanced numeric filtering: %s", sample_tokens_after
-    )
 
     tokens = remove_words_less_than_length_three_characters([tokens])[0]
 
@@ -354,29 +315,9 @@ def process_document_chunk(
                 token.lemma_ for token in doc if token.pos_ in worker_allowed_postags
             ]
 
-            # Debug: Log sample tokens after lemmatization
-            sample_tokens_lemma = tokens[:20] if tokens else []
-            logger.debug("Sample tokens after lemmatization: %s", sample_tokens_lemma)
-
-            # Final numeric filtering after lemmatization
-            tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
-            tokens = [
-                token
-                for token in tokens
-                if token.lower() not in ["o", "oo", "ooo", "oooo"]
-            ]
-
         except Exception as e:
             logger.warning("Worker lemmatization failed: %s", str(e))
             # Fall back to original tokens
-
-    # Final cleanup - remove any remaining numeric-like patterns
-    tokens = [token for token in tokens if not re.match(r"^[oO0-9]+$", token)]
-    tokens = [
-        token
-        for token in tokens
-        if token.lower() not in ["o", "oo", "ooo", "oooo", "ooooo"]
-    ]
 
     return tokens
 
@@ -520,11 +461,6 @@ def pre_processing_gensim(
                 "Could not load stopwords from %s: %s", stopwords_file, str(e)
             )
 
-    # logger.info("Total number of stopwords: %d", len(stop_words))
-
-    # spaCy model loading now handled by worker processes
-    # Main process no longer needs to load spaCy model
-
     # Checkpoint handling
     processed_batches = []
     checkpoint_path = None
@@ -548,8 +484,6 @@ def pre_processing_gensim(
                     e,
                 )
                 processed_batches = []
-
-    # logger.info("Pre-processing the documents")
 
     all_texts = []
     batch_num = 0
@@ -838,7 +772,7 @@ def filter_corpus_by_tfidf(
             token = dictionary.id2token[term_id]
             new_dictionary.doc2bow([token], allow_update=True)
 
-    # Print statistics
+    # Print statistics and calculate percentage removed
     initial_terms = len(dictionary)
     final_terms = len(new_dictionary)
     removed_terms = initial_terms - final_terms
