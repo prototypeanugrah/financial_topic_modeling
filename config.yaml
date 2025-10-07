@@ -17,8 +17,8 @@ preprocessing:
   debug:
     - enabled: false
   filter_extremes:
-    no_below: 5 # filter out words that appear in less than 10 documents
-    no_above: 0.8 # filter out words that appear in more than 80% of documents
+    no_below: 5 # filter out words that appear in less than 10 documents. Increasing this reduces the number of tokens in the dictionary.
+    no_above: 0.5 # filter out words that appear in more than 50% of documents. Increasing this reduces the number of tokens in the dictionary.
     keep_n: 100000
 
 # LDA model settings
@@ -29,15 +29,24 @@ lda:
     limit: 100 # limit at 50 topics
     step: 10
   gensim:
-    random_state: 100
-    update_every: 1
-    chunksize: 512
-    iterations: 1000
-    passes: 10
-    alpha: auto
-    eta: auto
-    # eval_every: None
-    per_word_topics: false
+    ipo_params:
+      random_state: 100
+      update_every: 1
+      chunksize: 128
+      iterations: 1000
+      passes: 10
+      alpha: auto
+      eta: auto
+      per_word_topics: false
+    analyst_params:
+      random_state: 100
+      update_every: 1
+      chunksize: 1024
+      iterations: 200
+      passes: 50
+      alpha: auto
+      eta: auto
+      per_word_topics: false
 
 # Visualization settings
 visualization:

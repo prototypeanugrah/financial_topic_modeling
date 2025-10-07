@@ -715,85 +715,10 @@ def validate_preprocessing_output(
     return True
 
 
-def filter_corpus_by_tfidf(
-    corpus: List[List[Tuple[int, float]]],
-    dictionary: corpora.Dictionary,
-    low_value_threshold: float,
-) -> Tuple[List[List[Tuple[int, float]]], corpora.Dictionary]:
-    """
-    Filter corpus based on TF-IDF scores and remove missing words.
-
-    Args:
-        corpus: List of documents in bow format
-        dictionary: Gensim dictionary mapping word IDs to words
-        low_value_threshold: Minimum TF-IDF value to keep a term (default: 0.025)
-
-    Returns:
-        Tuple containing:
-        - Filtered corpus
-        - Updated dictionary with only retained terms
-    """
-    # Check if dictionary is empty
-    if not dictionary or len(dictionary) == 0:
-        logger.warning(
-            "Empty dictionary provided. Returning empty corpus and dictionary."
-        )
-        return [], corpora.Dictionary()
-
-    # Create TF-IDF model
-    tfidf_model = models.TfidfModel(corpus=corpus, id2word=dictionary)
-
-    # Track which terms are retained
-    retained_term_ids = set()
-    filtered_corpus = []
-
-    # Process each document
-    for bow in corpus:
-        # Get TF-IDF scores for this document
-        tfidf_scores = dict(tfidf_model[bow])
-
-        # Filter terms based on conditions:
-        # 1. Term must have TF-IDF score above threshold
-        # 2. Term must exist in TF-IDF model
-        new_bow = [
-            (term_id, freq)
-            for term_id, freq in bow
-            if term_id in tfidf_scores and tfidf_scores[term_id] >= low_value_threshold
-        ]
-
-        # Add retained terms to tracking set
-        retained_term_ids.update(term_id for term_id, _ in new_bow)
-        filtered_corpus.append(new_bow)
-
-    # Create new dictionary with only retained terms
-    new_dictionary = corpora.Dictionary()
-    for term_id in retained_term_ids:
-        if term_id in dictionary.id2token:
-            token = dictionary.id2token[term_id]
-            new_dictionary.doc2bow([token], allow_update=True)
-
-    # Print statistics and calculate percentage removed
-    initial_terms = len(dictionary)
-    final_terms = len(new_dictionary)
-    removed_terms = initial_terms - final_terms
-
-    # Only calculate percentage if initial_terms is not zero
-    percentage_removed = (
-        (removed_terms / initial_terms) * 100 if initial_terms > 0 else 0
-    )
-
-    logger.info("\nFiltering Statistics:")
-    logger.info("Initial vocabulary size: %d", initial_terms)
-    logger.info("Terms removed: %d (%f%%)", removed_terms, percentage_removed)
-    logger.info("Final vocabulary size: %d", final_terms)
-
-    return filtered_corpus, new_dictionary
-
-
 def test_corpus_filtering(
     dic: corpora.Dictionary,
     test_texts: List[List[str]],
-) -> Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, float]]]]:
+) -> List[List[Tuple[int, int]]]:
     """
     Filter the test corpus based on the train dictionary and tfidf model.
 
@@ -805,10 +730,252 @@ def test_corpus_filtering(
         Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, float]]]]:
         Tuple containing:
         - Filtered bow corpus
-        - Filtered tfidf corpus
     """
     bow_corpus = [dic.doc2bow(text) for text in test_texts]
-    tfidf_model = models.TfidfModel(corpus=bow_corpus, id2word=dic)
-    tfidf_corpus = tfidf_model[bow_corpus]
 
-    return bow_corpus, tfidf_corpus
+    return bow_corpus
+
+
+def create_shared_dictionary(
+    documents_generators: List[Iterator[List[str]]],
+    num_cores: int,
+    config: Dict,
+) -> corpora.Dictionary:
+    """
+    Create a shared dictionary from multiple document generators (e.g., IPO and Analyst reports).
+    This ensures both report types use the same vocabulary.
+
+    Args:
+        documents_generators: List of document generators (e.g., [ipo_generator, analyst_generator])
+        num_cores: Number of CPU cores to use
+        config: Configuration dictionary from YAML
+
+    Returns:
+        corpora.Dictionary: Shared dictionary for all document types
+    """
+    num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
+
+    # Get base stopwords from NLTK
+    stop_words = set(stopwords.words("english"))
+
+    # Define paths to additional stopwords files
+    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
+    stopwords_files = [
+        os.path.join(stopwords_files_path, file)
+        for file in os.listdir(stopwords_files_path)
+    ]
+
+    # Add domain-specific stopwords from files
+    for stopwords_file in stopwords_files:
+        try:
+            additional_stopwords = load_stopwords_from_file(stopwords_file)
+            stop_words.update(additional_stopwords)
+        except Exception as e:
+            logger.warning(
+                "Could not load stopwords from %s: %s", stopwords_file, str(e)
+            )
+
+    all_texts = []
+
+    # Process all document generators
+    for gen_idx, documents_generator in enumerate(documents_generators):
+        logger.info(
+            f"Processing document generator {gen_idx + 1}/{len(documents_generators)}"
+        )
+
+        documents_list = list(documents_generator)
+
+        for batch_documents in tqdm(
+            documents_list,
+            desc=f"Processing generator {gen_idx + 1} batches for shared dictionary",
+        ):
+            if not batch_documents:
+                logger.warning("Empty batch received, skipping")
+                continue
+
+            # Prepare arguments for parallel processing
+            process_args = [(doc, stop_words) for doc in batch_documents]
+
+            # Use ProcessPoolExecutor for CPU-bound preprocessing with spaCy worker initialization
+            with ProcessPoolExecutor(
+                max_workers=num_cores,
+                initializer=init_worker,
+                initargs=(
+                    config.get("spacy_model", "en_core_web_sm"),
+                    config.get("spacy_disabled", ["parser", "ner"]),
+                    config.get("allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]),
+                ),
+            ):
+                processed_batch = process_map(
+                    process_document_chunk,
+                    process_args,
+                    max_workers=num_cores,
+                    desc=f"Processing documents for shared dict (gen {gen_idx + 1})",
+                    chunksize=1,
+                )
+
+            all_texts.extend(processed_batch)
+            del processed_batch
+
+    if not all_texts:
+        logger.error("No valid documents were processed for shared dictionary")
+        return corpora.Dictionary()
+
+    logger.info(f"Total documents processed for shared dictionary: {len(all_texts)}")
+
+    # Build bigram and trigram models on ALL texts
+    bigram = models.Phrases(
+        all_texts,
+        min_count=5,
+        threshold=100,
+    )
+    trigram = models.Phrases(
+        bigram[all_texts],
+        threshold=100,
+    )
+
+    # Faster way to get a sentence clubbed as a trigram/bigram
+    bigram_mod = models.phrases.Phraser(bigram)
+    trigram_mod = models.phrases.Phraser(trigram)
+
+    # Apply bigrams and trigrams to all texts
+    all_texts = make_bigrams(all_texts, bigram_mod)
+    all_texts = make_trigrams(all_texts, trigram_mod, bigram_mod)
+
+    # Clean up n-gram models to save memory
+    del bigram, trigram, bigram_mod, trigram_mod
+
+    # Create Dictionary - mapping of unique ids to words in the documents
+    shared_dic = corpora.Dictionary(all_texts)
+    logger.info("Number of unique tokens in shared dictionary: %d", len(shared_dic))
+
+    # Filter out tokens that appear in less than N documents or more than X% of documents
+    shared_dic.filter_extremes(
+        no_below=config.get("filter_extremes", {}).get("no_below", 3),
+        no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
+        keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
+    )
+    logger.info(
+        "Number of unique tokens after filtering in shared dictionary: %d",
+        len(shared_dic),
+    )
+
+    return shared_dic
+
+
+def pre_processing_with_dictionary(
+    documents_generator: Iterator[List[str]],
+    shared_dictionary: corpora.Dictionary,
+    num_cores: int,
+    config: Dict,
+    mode: str,
+) -> Tuple[
+    List[List[Tuple[int, int]]],
+    List[List[str]],
+]:
+    """
+    Preprocess documents using a pre-built shared dictionary.
+
+    Args:
+        documents_generator: Iterator of document batches
+        shared_dictionary: Pre-built shared dictionary
+        num_cores: Number of CPU cores to use
+        config: Configuration dictionary from YAML
+        mode: Training or testing mode
+
+    Returns:
+        Tuple containing:
+        - bow_corpus: Bag of words corpus
+        - texts: Preprocessed document texts
+    """
+    num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
+
+    # Get base stopwords from NLTK
+    stop_words = set(stopwords.words("english"))
+
+    # Define paths to additional stopwords files
+    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
+    stopwords_files = [
+        os.path.join(stopwords_files_path, file)
+        for file in os.listdir(stopwords_files_path)
+    ]
+
+    # Add domain-specific stopwords from files
+    for stopwords_file in stopwords_files:
+        try:
+            additional_stopwords = load_stopwords_from_file(stopwords_file)
+            stop_words.update(additional_stopwords)
+        except Exception as e:
+            logger.warning(
+                "Could not load stopwords from %s: %s", stopwords_file, str(e)
+            )
+
+    all_texts = []
+    documents_list = list(documents_generator)
+
+    for batch_documents in tqdm(
+        documents_list,
+        desc=f"Processing {mode} batches with shared dictionary",
+    ):
+        if not batch_documents:
+            logger.warning("Empty batch received, skipping")
+            continue
+
+        # Prepare arguments for parallel processing
+        process_args = [(doc, stop_words) for doc in batch_documents]
+
+        # Use ProcessPoolExecutor for CPU-bound preprocessing
+        with ProcessPoolExecutor(
+            max_workers=num_cores,
+            initializer=init_worker,
+            initargs=(
+                config.get("spacy_model", "en_core_web_sm"),
+                config.get("spacy_disabled", ["parser", "ner"]),
+                config.get("allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]),
+            ),
+        ):
+            processed_batch = process_map(
+                process_document_chunk,
+                process_args,
+                max_workers=num_cores,
+                desc=f"Processing {mode} documents",
+                chunksize=1,
+            )
+
+        all_texts.extend(processed_batch)
+        del processed_batch
+
+    if not all_texts:
+        logger.error("No valid documents were processed")
+        return [], [], []
+
+    # Build bigram and trigram models on ALL texts
+    bigram = models.Phrases(
+        all_texts,
+        min_count=5,
+        threshold=100,
+    )
+    trigram = models.Phrases(
+        bigram[all_texts],
+        threshold=100,
+    )
+
+    # Faster way to get a sentence clubbed as a trigram/bigram
+    bigram_mod = models.phrases.Phraser(bigram)
+    trigram_mod = models.phrases.Phraser(trigram)
+
+    # Apply bigrams and trigrams to all texts
+    all_texts = make_bigrams(all_texts, bigram_mod)
+    all_texts = make_trigrams(all_texts, trigram_mod, bigram_mod)
+
+    # Clean up n-gram models to save memory
+    del bigram, trigram, bigram_mod, trigram_mod
+
+    # Use the shared dictionary to create BOW corpus
+    bow_corpus = [shared_dictionary.doc2bow(text) for text in all_texts]
+
+    logger.info(
+        f"Created {mode} corpus with {len(bow_corpus)} documents using shared dictionary"
+    )
+
+    return bow_corpus, all_texts

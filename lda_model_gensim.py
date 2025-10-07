@@ -106,7 +106,7 @@ def performance_metrics(
 
     # Compute Perplexity (primary metric)
     try:
-        metrics["perplexity"] = np.exp2(-model.log_perplexity(corpus))
+        metrics["perplexity"] = float(np.exp2(-model.log_perplexity(corpus)))
     except Exception as e:
         logger.error(f"Failed to compute perplexity: {e}")
         metrics["perplexity"] = float("inf")
@@ -147,7 +147,7 @@ def performance_metrics(
                     )
                     metrics[f"coherence_{coherence_type}"] = None
                 else:
-                    metrics[f"coherence_{coherence_type}"] = coherence_score
+                    metrics[f"coherence_{coherence_type}"] = float(coherence_score)
             except (ZeroDivisionError, RuntimeWarning, ValueError) as e:
                 logger.warning(
                     f"Failed to compute {coherence_type} coherence due to sparse vocabulary: {e}"

@@ -3,7 +3,6 @@ import logging
 
 import pandas as pd
 
-import cross_validation
 import lda_model_gensim
 import utils
 from data_preprocessing import lda_preprocessing as data_preprocessing
@@ -90,19 +89,6 @@ def arguments_parser():
         help="Whether to optimize the number of topics. If not provided, the number of topics will not be optimized.",
     )
 
-    parser.add_argument(
-        "--cross_validate",
-        action="store_true",
-        help="Perform k-fold cross-validation instead of train/test split evaluation.",
-    )
-
-    parser.add_argument(
-        "--cv_folds",
-        type=int,
-        default=5,
-        help="Number of folds for cross-validation (default: 5).",
-    )
-
     return parser.parse_args()
 
 
@@ -113,6 +99,7 @@ def process_report_type(
     config: dict,
     output_dir: str,
     prefix: str,
+    shared_dictionary=None,
 ):
     """
     Process a specific report type (ipo or analyst) through the full pipeline.
@@ -124,79 +111,80 @@ def process_report_type(
         config: Configuration dictionary
         output_dir: Output directory path
         prefix: Prefix for output files
+        shared_dictionary: Optional shared dictionary for both report types (default: None)
     """
     logger.info(
         f"Starting processing for {report_type} reports with {len(file_paths)} files"
     )
 
-    # Check if cross-validation mode
-    if args.cross_validate:
-        if not args.num_topics:
-            raise ValueError(
-                "Cross-validation requires specifying number of topics with -k/--num_topics"
-            )
-
-        logger.info(f"Running cross-validation for {report_type} reports")
-
-        # Load all documents for CV
-        all_documents = utils.load_documents_from_paths(
-            file_paths=file_paths,
-            num_docs=args.num_docs,
-        )
-
-        # Run cross-validation
-        cv_results = cross_validation.cross_validate_lda(
-            documents=all_documents,
-            config=config,
-            num_topics=args.num_topics,
-            num_cores=args.num_cores,
-            n_splits=args.cv_folds,
-            compute_coherence=args.compute_coherence,
-        )
-
-        # Print and save results with prefix
-        cross_validation.print_cv_summary(cv_results)
-        utils.save_cv_results(cv_results, output_dir, prefix=prefix)
-
+    if shared_dictionary is not None:
         logger.info(
-            f"Cross-validation for {report_type} reports completed successfully"
+            f"Using shared dictionary with {len(shared_dictionary)} unique tokens"
         )
-        return
 
     # Load data for standard train/test split
-    train_documents_generator, test_documents_generator = (
-        utils.load_files_in_batches_from_paths(
-            file_paths=file_paths,
-            batch_size=args.batch_size,
-            num_docs=args.num_docs,
-            test_perc=args.test_perc,
-        )
+    train_documents_generator = utils.load_files_in_batches_from_paths(
+        file_paths=file_paths,
+        batch_size=args.batch_size,
+        num_docs=args.num_docs,
     )
 
     # -------- Preprocess data --------
     logger.info(f"Starting preprocessing for {report_type} reports")
-    train_dictionary, train_bow_corpus, train_tfidf_corpus, train_texts = (
-        data_preprocessing.pre_processing_gensim(
-            documents_generator=train_documents_generator,
-            config=config["preprocessing"],
-            num_cores=args.num_cores,
-            mode="train",
-        )
-    )
-    test_texts = data_preprocessing.pre_processing_gensim(
-        documents_generator=test_documents_generator,
-        config=config["preprocessing"],
-        num_cores=args.num_cores,
-        mode="test",
-    )[3]
 
-    (
-        test_bow_corpus,
-        test_tfidf_corpus,
-    ) = data_preprocessing.test_corpus_filtering(
-        dic=train_dictionary,
-        test_texts=test_texts,
-    )
+    if shared_dictionary is not None:
+        # Use shared dictionary for preprocessing
+        logger.info(f"Using shared dictionary for {report_type} preprocessing")
+        train_bow_corpus, train_texts = (
+            data_preprocessing.pre_processing_with_dictionary(
+                documents_generator=train_documents_generator,
+                shared_dictionary=shared_dictionary,
+                config=config["preprocessing"],
+                num_cores=args.num_cores,
+                mode="train",
+            )
+        )
+
+        # # Process test data with shared dictionary
+        # _, test_texts = data_preprocessing.pre_processing_with_dictionary(
+        #     documents_generator=test_documents_generator,
+        #     shared_dictionary=shared_dictionary,
+        #     config=config["preprocessing"],
+        #     num_cores=args.num_cores,
+        #     mode="test",
+        # )
+
+        # # Use shared dictionary for test corpus
+        # (test_bow_corpus,) = data_preprocessing.test_corpus_filtering(
+        #     dic=shared_dictionary,
+        #     test_texts=test_texts,
+        # )
+
+        # Use shared dictionary as train dictionary
+        train_dictionary = shared_dictionary
+
+    else:
+        # Original workflow: create separate dictionary for each report type
+        logger.info(f"Creating separate dictionary for {report_type} reports")
+        train_dictionary, train_bow_corpus, train_texts = (
+            data_preprocessing.pre_processing_gensim(
+                documents_generator=train_documents_generator,
+                config=config["preprocessing"],
+                num_cores=args.num_cores,
+                mode="train",
+            )
+        )
+        # test_texts = data_preprocessing.pre_processing_gensim(
+        #     documents_generator=train_documents_generator,
+        #     config=config["preprocessing"],
+        #     num_cores=args.num_cores,
+        #     mode="test",
+        # )[2]
+
+        # (test_bow_corpus,) = data_preprocessing.test_corpus_filtering(
+        #     dic=train_dictionary,
+        #     test_texts=test_texts,
+        # )
 
     # Initialize variables for perplexity scores
     test_perplexity_scores = []
@@ -210,18 +198,20 @@ def process_report_type(
             "save_intermediate_models", True
         )
         model_save_dir = (
-            output_dir / f"{prefix}intermediate_models" if save_models_to_disk else None
+            output_dir / f"{prefix}_intermediate_models"
+            if save_models_to_disk
+            else None
         )
 
         # Run optimization
         topic_model, all_metrics, best_topic_num = (
             lda_model_gensim.optimize_topic_number(
                 train_corpus=train_bow_corpus,
-                test_corpus=test_bow_corpus,
+                # test_corpus=test_bow_corpus,
                 id2word=train_dictionary,
                 texts=train_texts,
                 topic_range=config["lda"]["topic_range"],
-                model_params=config["lda"]["gensim"],
+                model_params=config["lda"]["gensim"][f"{prefix}_params"],
                 num_cores=args.num_cores,
                 save_models=save_models_to_disk,
                 save_dir=str(model_save_dir) if model_save_dir else None,
@@ -258,9 +248,9 @@ def process_report_type(
         topic_model = lda_model_gensim.model_training(
             topic_num=args.num_topics,
             train_corpus=train_bow_corpus,
-            test_corpus=test_bow_corpus,
+            # test_corpus=test_bow_corpus,
             id2word=train_dictionary,
-            model_params=config["lda"]["gensim"],
+            model_params=config["lda"]["gensim"][f"{prefix}_params"],
         )
 
     else:
@@ -278,15 +268,15 @@ def process_report_type(
     )
     perf_metrics["train"] = train_metrics
 
-    logger.info(f"Computing model performance metrics for {report_type} test set")
-    test_metrics = lda_model_gensim.performance_metrics(
-        model=topic_model,
-        corpus=test_bow_corpus,
-        texts=train_texts,  # Use train texts for coherence to avoid vocabulary mismatch
-        id2word=train_dictionary,
-        compute_coherence=args.compute_coherence,
-    )
-    perf_metrics["test"] = test_metrics
+    # logger.info(f"Computing model performance metrics for {report_type} test set")
+    # test_metrics = lda_model_gensim.performance_metrics(
+    #     model=topic_model,
+    #     corpus=test_bow_corpus,
+    #     texts=train_texts,  # Use train texts for coherence to avoid vocabulary mismatch
+    #     id2word=train_dictionary,
+    #     compute_coherence=args.compute_coherence,
+    # )
+    # perf_metrics["test"] = test_metrics
 
     # Save results
     logger.info(f"Saving results for {report_type} reports")
@@ -294,7 +284,7 @@ def process_report_type(
         output_dir=output_dir,
         lda_model=topic_model,
         train_corpus=train_bow_corpus,
-        test_corpus=test_bow_corpus,
+        # test_corpus=test_bow_corpus,
         perf_metrics=perf_metrics,
         config=config,
         prefix=prefix,
@@ -309,13 +299,13 @@ def process_report_type(
             mode="train",
             prefix=prefix,
         )
-        utils.plot_perplexity_scores(
-            topic_range=config["lda"]["topic_range"],
-            perplexity_scores=test_perplexity_scores,
-            output_dir=output_dir,
-            mode="test",
-            prefix=prefix,
-        )
+        # utils.plot_perplexity_scores(
+        #     topic_range=config["lda"]["topic_range"],
+        #     perplexity_scores=test_perplexity_scores,
+        #     output_dir=output_dir,
+        #     mode="test",
+        #     prefix=prefix,
+        # )
 
         # Save topic numbers and perplexity scores (for backward compatibility)
         utils.save_topic_perplexity_scores(
@@ -325,13 +315,13 @@ def process_report_type(
             prefix=prefix,
             mode="train",
         )
-        utils.save_topic_perplexity_scores(
-            config["lda"]["topic_range"],
-            test_perplexity_scores,
-            output_dir,
-            prefix=prefix,
-            mode="test",
-        )
+        # utils.save_topic_perplexity_scores(
+        #     config["lda"]["topic_range"],
+        #     test_perplexity_scores,
+        #     output_dir,
+        #     prefix=prefix,
+        #     mode="test",
+        # )
 
     # Generate visualizations
     if config["output"]["save_visualizations"]:
@@ -339,14 +329,14 @@ def process_report_type(
 
         visualize_wordcloud(
             lda_model=topic_model,
-            output_path=output_dir / f"{prefix}wordcloud.png",
+            output_path=output_dir / f"{prefix}_wordcloud.png",
             config=config["visualization"]["wordcloud"],
         )
 
     # Analyze word frequencies
     logger.info(f"Analyzing word frequencies for {report_type} reports")
     utils.analyze_word_frequencies(
-        file_path=output_dir / f"{prefix}topics.txt",
+        file_path=output_dir / f"{prefix}_topics.txt",
         output_dir=output_dir,
         prefix=prefix,
     )
@@ -360,13 +350,13 @@ def process_report_type(
         prefix=prefix,
         mode="train",
     )
-    lda_model_gensim.document_topic_distribution(
-        model=topic_model,
-        corpus=test_bow_corpus,
-        output_dir=output_dir,
-        prefix=prefix,
-        mode="test",
-    )
+    # lda_model_gensim.document_topic_distribution(
+    #     model=topic_model,
+    #     corpus=test_bow_corpus,
+    #     output_dir=output_dir,
+    #     prefix=prefix,
+    #     mode="test",
+    # )
 
     logger.info(f"Processing for {report_type} reports completed successfully")
 
@@ -390,9 +380,48 @@ def main():
         output_dir = utils.setup_output_directory(config)
 
         if args.report_type == "both":
-            # Process IPO reports first
+            # Create shared dictionary from both report types
             logger.info("=" * 60)
-            logger.info("STARTING IPO REPORTS PROCESSING")
+            logger.info("CREATING SHARED DICTIONARY FROM BOTH REPORT TYPES")
+            logger.info("=" * 60)
+
+            # Load all documents for shared dictionary creation
+            ipo_all_docs_generator, _ = utils.load_files_in_batches_from_paths(
+                file_paths=ipo_file_paths,
+                batch_size=args.batch_size,
+                num_docs=args.num_docs,
+                test_perc=0.0,  # Load all as training for dictionary
+            )
+
+            analyst_all_docs_generator, _ = utils.load_files_in_batches_from_paths(
+                file_paths=analyst_file_paths,
+                batch_size=args.batch_size,
+                num_docs=args.num_docs,
+                test_perc=0.0,  # Load all as training for dictionary
+            )
+
+            # Create shared dictionary from both document types
+            shared_dictionary = data_preprocessing.create_shared_dictionary(
+                documents_generators=[
+                    ipo_all_docs_generator,
+                    analyst_all_docs_generator,
+                ],
+                num_cores=args.num_cores,
+                config=config["preprocessing"],
+            )
+
+            logger.info(
+                f"Shared dictionary created with {len(shared_dictionary)} unique tokens"
+            )
+
+            # Save shared dictionary
+            shared_dict_path = output_dir / "shared_dictionary.id2word"
+            shared_dictionary.save(str(shared_dict_path))
+            logger.info(f"Shared dictionary saved to {shared_dict_path}")
+
+            # Process IPO reports first with shared dictionary
+            logger.info("=" * 60)
+            logger.info("STARTING IPO REPORTS PROCESSING WITH SHARED DICTIONARY")
             logger.info("=" * 60)
             process_report_type(
                 report_type="ipo",
@@ -400,12 +429,13 @@ def main():
                 args=args,
                 config=config,
                 output_dir=output_dir,
-                prefix="ipo_",
+                prefix="ipo",
+                shared_dictionary=shared_dictionary,
             )
 
-            # Process analyst reports second
+            # Process analyst reports second with shared dictionary
             logger.info("=" * 60)
-            logger.info("STARTING ANALYST REPORTS PROCESSING")
+            logger.info("STARTING ANALYST REPORTS PROCESSING WITH SHARED DICTIONARY")
             logger.info("=" * 60)
             process_report_type(
                 report_type="analyst",
@@ -413,12 +443,13 @@ def main():
                 args=args,
                 config=config,
                 output_dir=output_dir,
-                prefix="analyst_",
+                prefix="analyst",
+                shared_dictionary=shared_dictionary,
             )
 
         elif args.report_type == "ipo":
             logger.info("=" * 60)
-            logger.info("STARTING IPO REPORTS PROCESSING")
+            logger.info("STARTING IPO REPORTS PROCESSING (SINGLE REPORT TYPE MODE)")
             logger.info("=" * 60)
             process_report_type(
                 report_type="ipo",
@@ -426,12 +457,13 @@ def main():
                 args=args,
                 config=config,
                 output_dir=output_dir,
-                prefix="ipo_",
+                prefix="ipo",
+                shared_dictionary=None,
             )
 
         elif args.report_type == "analyst":
             logger.info("=" * 60)
-            logger.info("STARTING ANALYST REPORTS PROCESSING")
+            logger.info("STARTING ANALYST REPORTS PROCESSING (SINGLE REPORT TYPE MODE)")
             logger.info("=" * 60)
             process_report_type(
                 report_type="analyst",
@@ -439,14 +471,15 @@ def main():
                 args=args,
                 config=config,
                 output_dir=output_dir,
-                prefix="analyst_",
+                prefix="analyst",
+                shared_dictionary=None,
             )
 
         else:
             raise ValueError("Invalid report type")
 
         logger.info("=" * 60)
-        logger.info("PIPELINE COMPLETED SUCCESSFULLY FOR BOTH REPORT TYPES")
+        logger.info("PIPELINE COMPLETED SUCCESSFULLY")
         logger.info("=" * 60)
 
     except Exception as e:
