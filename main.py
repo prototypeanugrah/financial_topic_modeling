@@ -1,12 +1,13 @@
 import argparse
+import json
 import logging
+import os
+from pathlib import Path
 
-import pandas as pd
+import gensim
 
 import lda_model_gensim
 import utils
-from data_preprocessing import lda_preprocessing as data_preprocessing
-from visualizing_wordcloud import visualize_wordcloud
 
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
@@ -28,24 +29,6 @@ def arguments_parser():
         help="Path to configuration file",
     )
     parser.add_argument(
-        "--csv_file",
-        default="data/final_analyst_reports_for_latest_s1_filings_extracted.csv",
-        help="Path to CSV file containing report paths",
-    )
-    parser.add_argument(
-        "--report_type",
-        choices=["analyst", "ipo", "both"],
-        required=True,
-        help="Type of reports to process: 'analyst' for analyst reports, 'ipo' for S1 filings",
-    )
-    parser.add_argument(
-        "-n",
-        "--num_docs",
-        type=int,
-        required=True,
-        help="How many documents to run the topic modeling on. If running for less documents, mention the exact number. If want to run for all documents, enter 0",
-    )
-    parser.add_argument(
         "-k",
         "--num_topics",
         type=int,
@@ -54,35 +37,12 @@ def arguments_parser():
     )
     parser.add_argument(
         "-nc",
-        "--num_cores",
+        "--num_cores_lda",
         type=int,
         required=False,
-        default=16,
+        default=2,
         help="Minimum number of cores to run the topic modeling on. If not provided, the number of cores will be determined automatically.",
     )
-    parser.add_argument(
-        "-b",
-        "--batch_size",
-        type=int,
-        required=False,
-        default=100,
-        help="Number of documents to process in each batch. If not provided, the batch size will be 15.",
-    )
-    parser.add_argument(
-        "-t",
-        "--test_perc",
-        type=float,
-        required=False,
-        default=0.1,
-        help="Percentage of documents to use for testing. If not provided, the test percentage will be 20 percent.",
-    )
-
-    parser.add_argument(
-        "--compute_coherence",
-        action="store_true",
-        help="Whether to compute coherence metrics. If not provided, the coherence metrics will not be computed. If provided, the coherence metrics will be computed.",
-    )
-
     parser.add_argument(
         "--optimize_topics",
         action="store_true",
@@ -92,275 +52,6 @@ def arguments_parser():
     return parser.parse_args()
 
 
-def process_report_type(
-    report_type: str,
-    file_paths: list,
-    args: argparse.Namespace,
-    config: dict,
-    output_dir: str,
-    prefix: str,
-    shared_dictionary=None,
-):
-    """
-    Process a specific report type (ipo or analyst) through the full pipeline.
-
-    Args:
-        report_type: Type of report ('ipo' or 'analyst')
-        file_paths: List of file paths for this report type
-        args: Command line arguments
-        config: Configuration dictionary
-        output_dir: Output directory path
-        prefix: Prefix for output files
-        shared_dictionary: Optional shared dictionary for both report types (default: None)
-    """
-    logger.info(
-        f"Starting processing for {report_type} reports with {len(file_paths)} files"
-    )
-
-    if shared_dictionary is not None:
-        logger.info(
-            f"Using shared dictionary with {len(shared_dictionary)} unique tokens"
-        )
-
-    # Load data for standard train/test split
-    train_documents_generator = utils.load_files_in_batches_from_paths(
-        file_paths=file_paths,
-        batch_size=args.batch_size,
-        num_docs=args.num_docs,
-    )
-
-    # -------- Preprocess data --------
-    logger.info(f"Starting preprocessing for {report_type} reports")
-
-    if shared_dictionary is not None:
-        # Use shared dictionary for preprocessing
-        logger.info(f"Using shared dictionary for {report_type} preprocessing")
-        train_bow_corpus, train_texts = (
-            data_preprocessing.pre_processing_with_dictionary(
-                documents_generator=train_documents_generator,
-                shared_dictionary=shared_dictionary,
-                config=config["preprocessing"],
-                num_cores=args.num_cores,
-                mode="train",
-            )
-        )
-
-        # # Process test data with shared dictionary
-        # _, test_texts = data_preprocessing.pre_processing_with_dictionary(
-        #     documents_generator=test_documents_generator,
-        #     shared_dictionary=shared_dictionary,
-        #     config=config["preprocessing"],
-        #     num_cores=args.num_cores,
-        #     mode="test",
-        # )
-
-        # # Use shared dictionary for test corpus
-        # (test_bow_corpus,) = data_preprocessing.test_corpus_filtering(
-        #     dic=shared_dictionary,
-        #     test_texts=test_texts,
-        # )
-
-        # Use shared dictionary as train dictionary
-        train_dictionary = shared_dictionary
-
-    else:
-        # Original workflow: create separate dictionary for each report type
-        logger.info(f"Creating separate dictionary for {report_type} reports")
-        train_dictionary, train_bow_corpus, train_texts = (
-            data_preprocessing.pre_processing_gensim(
-                documents_generator=train_documents_generator,
-                config=config["preprocessing"],
-                num_cores=args.num_cores,
-                mode="train",
-            )
-        )
-        # test_texts = data_preprocessing.pre_processing_gensim(
-        #     documents_generator=train_documents_generator,
-        #     config=config["preprocessing"],
-        #     num_cores=args.num_cores,
-        #     mode="test",
-        # )[2]
-
-        # (test_bow_corpus,) = data_preprocessing.test_corpus_filtering(
-        #     dic=train_dictionary,
-        #     test_texts=test_texts,
-        # )
-
-    # Initialize variables for perplexity scores
-    test_perplexity_scores = []
-    train_perplexity_scores = []
-
-    # -------- Train model if optimize_topics is True --------
-    if args.optimize_topics and not args.num_topics:
-        logger.info(f"Starting topic optimization for {report_type} reports")
-        # Add configuration for optimization
-        save_models_to_disk = config.get("lda", {}).get(
-            "save_intermediate_models", True
-        )
-        model_save_dir = (
-            output_dir / f"{prefix}_intermediate_models"
-            if save_models_to_disk
-            else None
-        )
-
-        # Run optimization
-        topic_model, all_metrics, best_topic_num = (
-            lda_model_gensim.optimize_topic_number(
-                train_corpus=train_bow_corpus,
-                # test_corpus=test_bow_corpus,
-                id2word=train_dictionary,
-                texts=train_texts,
-                topic_range=config["lda"]["topic_range"],
-                model_params=config["lda"]["gensim"][f"{prefix}_params"],
-                num_cores=args.num_cores,
-                save_models=save_models_to_disk,
-                save_dir=str(model_save_dir) if model_save_dir else None,
-                compute_coherence=args.compute_coherence,  # Always compute for reporting
-            )
-        )
-
-        # Extract perplexity scores for plotting (use test perplexity)
-        test_perplexity_scores = [
-            metrics.get("test", {}).get("perplexity", float("inf"))
-            for num_topics, metrics in sorted(all_metrics.items())
-        ]
-
-        # Extract train perplexity scores for plotting (currently unused but available for future use)
-        train_perplexity_scores = [
-            metrics.get("train", {}).get("perplexity", float("inf"))
-            for num_topics, metrics in sorted(all_metrics.items())
-        ]
-
-        logger.info(f"Best number of topics for {report_type}: %s", best_topic_num)
-        # Save comprehensive metrics
-        # utils.save_optimization_metrics(
-        #     config["lda"]["topic_range"],
-        #     all_metrics,
-        #     output_dir,
-        #     prefix=prefix,
-        # )
-
-    elif args.num_topics and not args.optimize_topics:
-        logger.info(
-            f"Training LDA model for {report_type} reports with %s topics",
-            args.num_topics,
-        )
-        topic_model = lda_model_gensim.model_training(
-            topic_num=args.num_topics,
-            train_corpus=train_bow_corpus,
-            # test_corpus=test_bow_corpus,
-            id2word=train_dictionary,
-            model_params=config["lda"]["gensim"][f"{prefix}_params"],
-        )
-
-    else:
-        raise ValueError("No topic number provided")
-
-    # -------- Compute metrics --------
-    perf_metrics = {}
-    logger.info(f"Computing model performance metrics for {report_type} train set")
-    train_metrics = lda_model_gensim.performance_metrics(
-        model=topic_model,
-        corpus=train_bow_corpus,
-        texts=train_texts,
-        id2word=train_dictionary,
-        compute_coherence=args.compute_coherence,
-    )
-    perf_metrics["train"] = train_metrics
-
-    # logger.info(f"Computing model performance metrics for {report_type} test set")
-    # test_metrics = lda_model_gensim.performance_metrics(
-    #     model=topic_model,
-    #     corpus=test_bow_corpus,
-    #     texts=train_texts,  # Use train texts for coherence to avoid vocabulary mismatch
-    #     id2word=train_dictionary,
-    #     compute_coherence=args.compute_coherence,
-    # )
-    # perf_metrics["test"] = test_metrics
-
-    # Save results
-    logger.info(f"Saving results for {report_type} reports")
-    utils.save_model_results(
-        output_dir=output_dir,
-        lda_model=topic_model,
-        train_corpus=train_bow_corpus,
-        # test_corpus=test_bow_corpus,
-        perf_metrics=perf_metrics,
-        config=config,
-        prefix=prefix,
-    )
-
-    # Plot perplexity scores
-    if args.optimize_topics:
-        utils.plot_perplexity_scores(
-            topic_range=config["lda"]["topic_range"],
-            perplexity_scores=train_perplexity_scores,
-            output_dir=output_dir,
-            mode="train",
-            prefix=prefix,
-        )
-        # utils.plot_perplexity_scores(
-        #     topic_range=config["lda"]["topic_range"],
-        #     perplexity_scores=test_perplexity_scores,
-        #     output_dir=output_dir,
-        #     mode="test",
-        #     prefix=prefix,
-        # )
-
-        # Save topic numbers and perplexity scores (for backward compatibility)
-        utils.save_topic_perplexity_scores(
-            config["lda"]["topic_range"],
-            train_perplexity_scores,
-            output_dir,
-            prefix=prefix,
-            mode="train",
-        )
-        # utils.save_topic_perplexity_scores(
-        #     config["lda"]["topic_range"],
-        #     test_perplexity_scores,
-        #     output_dir,
-        #     prefix=prefix,
-        #     mode="test",
-        # )
-
-    # Generate visualizations
-    if config["output"]["save_visualizations"]:
-        logger.info(f"Generating visualizations for {report_type} reports")
-
-        visualize_wordcloud(
-            lda_model=topic_model,
-            output_path=output_dir / f"{prefix}_wordcloud.png",
-            config=config["visualization"]["wordcloud"],
-        )
-
-    # Analyze word frequencies
-    logger.info(f"Analyzing word frequencies for {report_type} reports")
-    utils.analyze_word_frequencies(
-        file_path=output_dir / f"{prefix}_topics.txt",
-        output_dir=output_dir,
-        prefix=prefix,
-    )
-
-    # Save document topic distribution
-    logger.info(f"Saving document topic distribution for {report_type} reports")
-    lda_model_gensim.document_topic_distribution(
-        model=topic_model,
-        corpus=train_bow_corpus,
-        output_dir=output_dir,
-        prefix=prefix,
-        mode="train",
-    )
-    # lda_model_gensim.document_topic_distribution(
-    #     model=topic_model,
-    #     corpus=test_bow_corpus,
-    #     output_dir=output_dir,
-    #     prefix=prefix,
-    #     mode="test",
-    # )
-
-    logger.info(f"Processing for {report_type} reports completed successfully")
-
-
 def main():
     # Parse arguments
     args = arguments_parser()
@@ -368,123 +59,147 @@ def main():
     # Load configuration
     config = utils.load_config(args.config)
 
-    # Load CSV and extract file paths for both report types
-    df = pd.read_csv(args.csv_file)
+    # load the train and val data from the preprocessed directory
+    preprocessed_dir = Path("outputs/run_20251011_153357/preprocessed")
+    model_save_dir = Path("outputs/run_20251011_153357/models_macro")
 
-    # Extract file paths for both report types
-    ipo_file_paths = df["s1_path"].dropna().tolist()
-    analyst_file_paths = df["analyst_report_path"].dropna().tolist()
+    # with open(preprocessed_dir / "train_texts.txt", "r") as f:
+    #     train_texts = f.readlines()
+    # with open(preprocessed_dir / "val_texts.txt", "r") as f:
+    #     val_texts = f.readlines()
+    # with open(preprocessed_dir / "test_texts.txt", "r") as f:
+    #     test_texts = f.readlines()
+    # with open(preprocessed_dir / "train_val_texts.txt", "r") as f:
+    #     train_val_texts = f.readlines()
 
-    try:
-        # Setup output directory
-        output_dir = utils.setup_output_directory(config)
+    train_dictionary = gensim.corpora.Dictionary.load(
+        str(preprocessed_dir / "train_dictionary.id2word")
+    )
+    train_bow_corpus = gensim.corpora.MmCorpus(
+        str(preprocessed_dir / "train_bow_corpus.mm")
+    )
+    val_bow_corpus = gensim.corpora.MmCorpus(
+        str(preprocessed_dir / "val_bow_corpus.mm")
+    )
+    test_bow_corpus = gensim.corpora.MmCorpus(
+        str(preprocessed_dir / "test_bow_corpus.mm")
+    )
+    train_val_bow_corpus = gensim.corpora.MmCorpus(
+        str(preprocessed_dir / "train_val_bow_corpus.mm")
+    )
 
-        if args.report_type == "both":
-            # Create shared dictionary from both report types
-            logger.info("=" * 60)
-            logger.info("CREATING SHARED DICTIONARY FROM BOTH REPORT TYPES")
-            logger.info("=" * 60)
+    print(f"Loaded train corpus: {len(train_bow_corpus)}")
+    print(f"Loaded val corpus: {len(val_bow_corpus)}")
+    print(f"Loaded test corpus: {len(test_bow_corpus)}")
+    print(f"Loaded train_val corpus: {len(train_val_bow_corpus)}")
+    print(f"Loaded train_dictionary with tokens: {len(train_dictionary)}")
 
-            # Load all documents for shared dictionary creation
-            ipo_all_docs_generator, _ = utils.load_files_in_batches_from_paths(
-                file_paths=ipo_file_paths,
-                batch_size=args.batch_size,
-                num_docs=args.num_docs,
-                test_perc=0.0,  # Load all as training for dictionary
-            )
+    # Convert validation corpus to an in-memory list for per-type slicing
+    val_bow_docs = list(val_bow_corpus)
+    with open(preprocessed_dir / "val_combined_order_dict.json", "r") as f:
+        val_order_dict = json.load(f)
+    val_doc_items = sorted(
+        val_order_dict.items(),
+        key=lambda item: int(item[0].replace("doc", "")),
+    )
+    if len(val_doc_items) != len(val_bow_docs):
+        raise ValueError(
+            "Mismatch between validation corpus size and order dictionary entries."
+        )
 
-            analyst_all_docs_generator, _ = utils.load_files_in_batches_from_paths(
-                file_paths=analyst_file_paths,
-                batch_size=args.batch_size,
-                num_docs=args.num_docs,
-                test_perc=0.0,  # Load all as training for dictionary
-            )
-
-            # Create shared dictionary from both document types
-            shared_dictionary = data_preprocessing.create_shared_dictionary(
-                documents_generators=[
-                    ipo_all_docs_generator,
-                    analyst_all_docs_generator,
-                ],
-                num_cores=args.num_cores,
-                config=config["preprocessing"],
-            )
-
-            logger.info(
-                f"Shared dictionary created with {len(shared_dictionary)} unique tokens"
-            )
-
-            # Save shared dictionary
-            shared_dict_path = output_dir / "shared_dictionary.id2word"
-            shared_dictionary.save(str(shared_dict_path))
-            logger.info(f"Shared dictionary saved to {shared_dict_path}")
-
-            # Process IPO reports first with shared dictionary
-            logger.info("=" * 60)
-            logger.info("STARTING IPO REPORTS PROCESSING WITH SHARED DICTIONARY")
-            logger.info("=" * 60)
-            process_report_type(
-                report_type="ipo",
-                file_paths=ipo_file_paths,
-                args=args,
-                config=config,
-                output_dir=output_dir,
-                prefix="ipo",
-                shared_dictionary=shared_dictionary,
-            )
-
-            # Process analyst reports second with shared dictionary
-            logger.info("=" * 60)
-            logger.info("STARTING ANALYST REPORTS PROCESSING WITH SHARED DICTIONARY")
-            logger.info("=" * 60)
-            process_report_type(
-                report_type="analyst",
-                file_paths=analyst_file_paths,
-                args=args,
-                config=config,
-                output_dir=output_dir,
-                prefix="analyst",
-                shared_dictionary=shared_dictionary,
-            )
-
-        elif args.report_type == "ipo":
-            logger.info("=" * 60)
-            logger.info("STARTING IPO REPORTS PROCESSING (SINGLE REPORT TYPE MODE)")
-            logger.info("=" * 60)
-            process_report_type(
-                report_type="ipo",
-                file_paths=ipo_file_paths,
-                args=args,
-                config=config,
-                output_dir=output_dir,
-                prefix="ipo",
-                shared_dictionary=None,
-            )
-
-        elif args.report_type == "analyst":
-            logger.info("=" * 60)
-            logger.info("STARTING ANALYST REPORTS PROCESSING (SINGLE REPORT TYPE MODE)")
-            logger.info("=" * 60)
-            process_report_type(
-                report_type="analyst",
-                file_paths=analyst_file_paths,
-                args=args,
-                config=config,
-                output_dir=output_dir,
-                prefix="analyst",
-                shared_dictionary=None,
-            )
-
+    val_ipo_bow = []
+    val_analyst_bow = []
+    for (doc_key, label), bow in zip(val_doc_items, val_bow_docs):
+        label_lower = label.lower()
+        if label_lower.startswith("ipo_"):
+            val_ipo_bow.append(bow)
+        elif label_lower.startswith("analyst_"):
+            val_analyst_bow.append(bow)
         else:
-            raise ValueError("Invalid report type")
+            raise ValueError(
+                f"Unknown label '{label}' in validation order dictionary at {doc_key}."
+            )
 
-        logger.info("=" * 60)
-        logger.info("PIPELINE COMPLETED SUCCESSFULLY")
-        logger.info("=" * 60)
+    print(
+        f"Validation corpus split -> IPO docs: {len(val_ipo_bow)}, "
+        f"Analyst docs: {len(val_analyst_bow)}"
+    )
 
-    except Exception as e:
-        logger.error(f"Pipeline failed: {str(e)}")
-        raise
+    val_bow_corpus = val_bow_docs
+
+    if args.optimize_topics and not args.num_topics:
+        topic_model, metrics, optimal_num_topics = (
+            lda_model_gensim.optimize_topic_number(
+                train_corpus=train_bow_corpus,
+                val_corpus=val_bow_corpus,
+                id2word=train_dictionary,
+                topic_range=config["lda"]["topic_range"],
+                num_cores=config["lda"]["gensim"]["num_cores_lda"],
+                model_params=config["lda"]["gensim"]["params"],
+                random_seeds=config["lda"]["gensim"]["random_seeds"],
+                save_models=config["lda"]["save_intermediate_models"],
+                save_dir=str(model_save_dir),
+                # val_corpora_by_type={
+                #     "IPO": val_ipo_bow,
+                #     "Analyst": val_analyst_bow,
+                # },
+            )
+        )
+
+        print(f"Optimized number of topics: {optimal_num_topics}")
+
+        # Extract perplexity scores for all topic numbers (for plotting)
+        val_perplexity_scores = [
+            metrics[n]["val"]["average"] for n in sorted(metrics.keys())
+        ]
+        train_perplexity_scores = [
+            metrics[n]["train"]["average"] for n in sorted(metrics.keys())
+        ]
+
+        # Save the topic model
+        topic_model.save(
+            str(model_save_dir / f"lda_model_{optimal_num_topics}_optimized")
+        )
+
+    elif args.num_topics and not args.optimize_topics:
+        # Load the model if it exists
+        if os.path.exists(
+            str(model_save_dir / f"lda_model_{args.num_topics}_optimized")
+        ):
+            topic_model = gensim.models.LdaModel.load(
+                str(model_save_dir / f"lda_model_{args.num_topics}_optimized")
+            )
+        else:
+            topic_model = lda_model_gensim.model_training(
+                topic_num=args.num_topics,
+                train_corpus=train_val_bow_corpus,
+                id2word=train_dictionary,
+                model_params=config["lda"]["gensim"]["params"],
+            )
+
+    else:
+        raise ValueError("Provide either a topic number or optimize_topics flag")
+
+    if args.optimize_topics:
+        # Plot perplexity scores
+        utils.plot_perplexity_scores(
+            topic_range=config["lda"]["topic_range"],
+            perplexity_scores=train_perplexity_scores,
+            output_dir=model_save_dir,
+            mode="train",
+        )
+        utils.plot_perplexity_scores(
+            topic_range=config["lda"]["topic_range"],
+            perplexity_scores=val_perplexity_scores,
+            output_dir=model_save_dir,
+            mode="val",
+        )
+
+        # Save all the metrics
+        with open(str(model_save_dir / "metrics.json"), "w") as f:
+            json.dump(metrics, f)
+
+    # plot the metrics
 
 
 if __name__ == "__main__":

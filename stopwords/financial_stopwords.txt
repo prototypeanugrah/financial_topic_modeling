@@ -1,4 +1,4 @@
-share
+shares
 tenant
 stock
 stocks
@@ -179,5 +179,4 @@ indemnify
 disposition
 nevada
 alaska
-
-
+state

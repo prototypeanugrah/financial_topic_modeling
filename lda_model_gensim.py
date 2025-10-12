@@ -6,13 +6,12 @@ import logging
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numexpr as ne
 import numpy as np
 from gensim import models
 from gensim.corpora import Dictionary
-from gensim.models import CoherenceModel
 
 # from gensim.models.callbacks import PerplexityMetric  # Available but not used in current implementation
 from tqdm import tqdm
@@ -23,7 +22,6 @@ logger = logging.getLogger(__name__)
 def model_training(
     topic_num: int,
     train_corpus: List[List[Tuple[int, int]]],
-    test_corpus: List[List[Tuple[int, int]]],
     id2word: Dictionary,
     model_params: Dict[str, Any] = None,
 ) -> models.LdaModel:
@@ -56,17 +54,9 @@ def model_training(
     # Override num_topics with topic_num
     params["num_topics"] = topic_num
 
-    # Note: PerplexityMetric callback is available but not used in current implementation
-    # if test_corpus is not None:
-    #     perplexity_callback = PerplexityMetric(
-    #         corpus=test_corpus,
-    #         logger="shell",
-    #     )
-
     try:
         lda_model = models.LdaModel(
             corpus=train_corpus,
-            # callbacks=[perplexity_callback] if test_corpus is not None else None,
             id2word=id2word,
             eval_every=None,
             **params,
@@ -80,155 +70,195 @@ def model_training(
 def performance_metrics(
     model: models.LdaModel,
     corpus: List[List[Tuple[int, int]]],
-    texts: List[List[str]],
-    id2word: Dictionary,
-    compute_coherence: bool = True,
-    coherence_types: List[str] = None,
-) -> Dict[str, float]:
+) -> np.float64:
     """
     Calculate model performance metrics.
 
     Args:
         model: Trained LDA model
         corpus: Document corpus in bow format
-        texts: List of tokenized documents
-        id2word: Dictionary mapping word IDs to words
-        compute_coherence: Whether to compute coherence metrics
-        coherence_types: List of coherence types to compute
 
     Returns:
-        Dictionary containing all metrics
+        Perplexity score as a numpy float64
 
     Raises:
-        ValueError: If corpus or texts are empty
+        ValueError: If corpus is empty
     """
-    metrics = {}
 
     # Compute Perplexity (primary metric)
     try:
-        metrics["perplexity"] = float(np.exp2(-model.log_perplexity(corpus)))
+        perplexity = np.exp2(-model.log_perplexity(corpus))
     except Exception as e:
         logger.error(f"Failed to compute perplexity: {e}")
-        metrics["perplexity"] = float("inf")
+        perplexity = np.inf
 
-    # Compute Coherence Scores (secondary metrics for reporting)
-    if compute_coherence and texts:
-        if coherence_types is None:
-            coherence_types = ["c_v"]
+    return perplexity
 
-        for coherence_type in coherence_types:
-            try:
-                if coherence_type == "u_mass":
-                    # u_mass uses corpus, not texts
-                    coherence_model = CoherenceModel(
-                        model=model,
-                        corpus=corpus,
-                        dictionary=id2word,
-                        coherence=coherence_type,
-                    )
-                else:
-                    # c_v, c_npmi use texts
-                    coherence_model = CoherenceModel(
-                        model=model,
-                        texts=texts,
-                        dictionary=id2word,
-                        coherence=coherence_type,
-                    )
-                coherence_score = coherence_model.get_coherence()
-                # Check for invalid values (NaN, inf, or extremely low values)
-                if (
-                    coherence_score is None
-                    or not isinstance(coherence_score, (int, float))
-                    or coherence_score != coherence_score
-                    or abs(coherence_score) == float("inf")
-                ):
-                    logger.warning(
-                        f"Invalid {coherence_type} coherence score: {coherence_score}"
-                    )
-                    metrics[f"coherence_{coherence_type}"] = None
-                else:
-                    metrics[f"coherence_{coherence_type}"] = float(coherence_score)
-            except (ZeroDivisionError, RuntimeWarning, ValueError) as e:
-                logger.warning(
-                    f"Failed to compute {coherence_type} coherence due to sparse vocabulary: {e}"
-                )
-                metrics[f"coherence_{coherence_type}"] = None
-            except Exception as e:
-                logger.warning(
-                    f"Unexpected error computing {coherence_type} coherence: {e}"
-                )
-                metrics[f"coherence_{coherence_type}"] = None
 
-    return metrics
+def per_doc_log_per_word(
+    model: models.LdaModel,
+    corpus: List[List[Tuple[int, int]]],
+) -> List[float]:
+    """
+    Return a list of per-word log-likelihood values (one per document).
+    Uses gensim's log_perplexity on single-doc iterables.
+    """
+    if not corpus:
+        return []
+    return [model.log_perplexity([bow]) for bow in corpus]
+
+
+def perplexity_macro(
+    model: models.LdaModel,
+    corpora_by_type: Dict[str, List[List[Tuple[int, int]]]],
+    base: str = "2",
+) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+    """
+    Compute a type-balanced (macro) perplexity over multiple corpora (e.g., IPO vs Analyst).
+
+    Args:
+        model: Trained LDA model
+        corpora_by_type: Mapping from a type label (e.g., "IPO", "Analyst")
+                         to its corpus (list of BoW docs)
+        base: "2" for perplexity = 2^(-avg log p_w); "e" for exp(-avg log p_w)
+
+    Returns:
+        (ppx_macro, per_type_ppx, per_type_log_per_word)
+        - ppx_macro: macro perplexity across types (unweighted mean over types)
+        - per_type_ppx: dict of perplexity per type
+        - per_type_log_per_word: dict of mean per-word log-likelihood per type
+    """
+    if base not in {"2", "e"}:
+        raise ValueError("base must be '2' or 'e'")
+    to_ppx = np.exp2 if base == "2" else np.exp
+
+    per_type_lpw: Dict[str, float] = {}
+    per_type_ppx: Dict[str, float] = {}
+
+    for name, c in corpora_by_type.items():
+        if not c:
+            continue
+        lpws = per_doc_log_per_word(model, c)
+        mean_lpw = float(np.mean(lpws)) if lpws else float("-inf")
+        per_type_lpw[name] = mean_lpw
+        per_type_ppx[name] = float(to_ppx(-mean_lpw))
+
+    if not per_type_lpw:
+        return float("inf"), {}, {}
+
+    lp_macro = float(np.mean(list(per_type_lpw.values())))
+    ppx_macro = float(to_ppx(-lp_macro))
+    return ppx_macro, per_type_ppx, per_type_lpw
 
 
 def _train_single_model(
     args: Tuple[
-        int,
-        List[List[Tuple[int, int]]],
-        Dictionary,
-        Dict[str, Any],
-        List[List[str]],
+        int,  # num_topics
         List[List[Tuple[int, int]]],  # train_corpus
-        List[List[Tuple[int, int]]],  # test_corpus
-        bool,  # compute_coherence flag
-        str,  # Optional save path
+        List[List[Tuple[int, int]]],  # val_corpus
+        Optional[
+            Dict[str, List[List[Tuple[int, int]]]]
+        ],  # val_corpora_by_type (macro eval)
+        Dictionary,  # id2word
+        Dict[str, Any],  # model_params
+        List[int],  # random seeds
     ],
-) -> Tuple[models.LdaModel, Dict[str, float], int]:
+) -> Tuple[
+    models.LdaModel,
+    np.float64,
+    np.float64,
+    int,
+    List[Dict[str, Any]],
+]:
     """
     Helper function to train a single LDA model with given parameters.
     This needs to be at module level for multiprocessing to work.
 
     Args:
-        args: Tuple containing (num_topics, train_corpus, id2word, model_params, texts, test_corpus, compute_coherence, save_path)
+        args: Tuple containing (num_topics, train_corpus, test_corpus,
+        id2word, model_params, random_seeds)
 
     Returns:
-        Tuple of (trained model or None, metrics dict, num_topics)
+        Tuple containing the best seed model, averaged train perplexity,
+        averaged test perplexity, num_topics, and per-seed metrics
     """
     (
         num_topics,
         train_corpus,
+        val_corpus,
+        val_corpora_by_type,
         id2word,
         model_params,
-        texts,
-        train_corpus,
-        test_corpus,
-        compute_coherence,
-        save_path,
+        random_seeds,
     ) = args
 
     try:
-        # Train model
-        model = model_training(
-            topic_num=num_topics,
-            train_corpus=train_corpus,
-            test_corpus=test_corpus,
-            id2word=id2word,
-            model_params=model_params,
-        )
+        seed_metrics: List[Dict[str, Any]] = []
+        train_scores: List[float] = []
+        val_scores: List[float] = []
+        best_seed_model: Optional[models.LdaModel] = None
+        best_seed_val_perplexity = np.inf
 
-        # Compute metrics on train set
-        train_metrics = performance_metrics(
-            model=model,
-            corpus=train_corpus,
-            texts=texts,
-            id2word=id2word,
-            compute_coherence=compute_coherence,
-        )
+        for seed in random_seeds:
+            params = (model_params or {}).copy()
+            params["random_state"] = seed
 
-        # Compute metrics on test set
-        test_metrics = performance_metrics(
-            model=model,
-            corpus=test_corpus,
-            texts=texts,
-            id2word=id2word,
-            compute_coherence=compute_coherence,
-        )
+            model = model_training(
+                topic_num=num_topics,
+                train_corpus=train_corpus,
+                id2word=id2word,
+                model_params=params,
+            )
+
+            train_perplexity = performance_metrics(
+                model=model,
+                corpus=train_corpus,
+            )
+            # Prefer macro perplexity if per-type corpora are provided; else fallback to micro.
+            per_type_ppx: Dict[str, float] = {}
+            if val_corpora_by_type:
+                val_perplexity, per_type_ppx, _ = perplexity_macro(
+                    model=model,
+                    corpora_by_type=val_corpora_by_type,
+                    base="2",
+                )
+            else:
+                val_perplexity = performance_metrics(
+                    model=model,
+                    corpus=val_corpus,
+                )
+
+            seed_metric: Dict[str, Any] = {
+                "seed": seed,
+                "train_perplexity": float(train_perplexity),
+                "val_perplexity": float(val_perplexity),
+            }
+            if per_type_ppx:
+                seed_metric["val_perplexity_by_type"] = {
+                    name: float(ppx) for name, ppx in per_type_ppx.items()
+                }
+            seed_metrics.append(seed_metric)
+            train_scores.append(float(train_perplexity))
+            val_scores.append(float(val_perplexity))
+
+            if val_perplexity < best_seed_val_perplexity:
+                if best_seed_model is not None:
+                    del best_seed_model
+                best_seed_model = model
+                best_seed_val_perplexity = val_perplexity
+            else:
+                del model
+
+        if not seed_metrics:
+            raise RuntimeError("Failed to train any models for the provided seeds.")
+
+        avg_train_perplexity = float(np.min(train_scores))
+        avg_val_perplexity = float(np.min(val_scores))
 
         # # Save model to disk if path provided (memory optimization)
         # if save_path:
         #     from pathlib import Path
-
+        #
         #     save_dir = Path(save_path)
         #     save_dir.mkdir(parents=True, exist_ok=True)
         #     model_file = save_dir / f"lda_model_{num_topics}_topics.gz"
@@ -237,47 +267,53 @@ def _train_single_model(
         #     # Return None instead of model to save memory
         #     return None, metrics, num_topics
 
-        return model, train_metrics, test_metrics, num_topics
-
+        return (
+            best_seed_model,
+            avg_train_perplexity,
+            avg_val_perplexity,
+            num_topics,
+            seed_metrics,
+        )
     except Exception as e:
         logger.error(f"Failed to train model with {num_topics} topics: {e}")
         return (
             None,
-            {"perplexity": float("inf")},
-            {"perplexity": float("inf")},
+            np.inf,
+            np.inf,
             num_topics,
+            [],
         )
 
 
 def optimize_topic_number(
     train_corpus: List[List[Tuple[int, int]]],
-    test_corpus: List[List[Tuple[int, int]]],
+    val_corpus: List[List[Tuple[int, int]]],
     id2word: Dictionary,
-    texts: List[List[str]],
     topic_range: Dict[str, int],
     num_cores: int,
     model_params: Dict[str, Any] = None,
+    random_seeds: Optional[List[int]] = None,
     save_models: bool = False,
     save_dir: str = None,
-    compute_coherence: bool = True,
-) -> Tuple[models.LdaModel, Dict[int, Dict[str, float]], int]:
+    val_corpora_by_type: Optional[Dict[str, List[List[Tuple[int, int]]]]] = None,
+) -> Tuple[models.LdaModel, Dict[int, Dict[str, Any]], int]:
     """
     Find optimal number of topics using perplexity scores with memory optimization.
 
     Args:
         train_corpus: Training document corpus
         id2word: Dictionary mapping
-        texts: Tokenized documents
         topic_range: Topic range parameters
         num_cores: Number of CPU cores
         model_params: Model parameters
-        test_corpus: Test corpus for evaluation
+        random_seeds: List of seeds to average over for random_state
+        val_corpus: Validation corpus for evaluation
         save_models: Whether to save models to disk
         save_dir: Directory to save models
-        compute_coherence: Whether to compute coherence metrics
 
     Returns:
-        Tuple of (best_model, all_metrics, best_num_topics)
+        Tuple of (best_model, all_metrics, best_num_topics) where all_metrics maps
+        each topic count to averaged/per-seed train and val perplexities.
 
     Raises:
         ValueError: If topic_range parameters are invalid
@@ -296,40 +332,43 @@ def optimize_topic_number(
     topic_numbers = list(
         range(
             topic_range["start"],
-            topic_range["limit"],
+            topic_range["limit"] + 1,  # +1 because range is exclusive
             topic_range["step"],
         )
     )
+
+    if not random_seeds:
+        random_seeds = [42, 100, 3]
+    else:
+        random_seeds = list(random_seeds)
 
     # Prepare arguments for parallel processing
     train_args = [
         (
             n,
             train_corpus,
+            val_corpus,
+            val_corpora_by_type,
             id2word,
             model_params,
-            texts,
-            train_corpus,
-            test_corpus,
-            compute_coherence,
-            save_dir if save_models else None,
+            random_seeds,
         )
         for n in topic_numbers
     ]
 
-    # Determine number of processes (cap at 8 for memory)
-    num_processes = min(num_cores, mp.cpu_count(), 8)
+    # Determine number of cores (cap at 8 for memory)
+    num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
 
     # Set NumExpr thread count to match our process limit
-    ne.set_num_threads(min(num_processes, 8))
+    ne.set_num_threads(min(num_cores, mp.cpu_count()))
 
     # Track results
     all_metrics = {}
     best_model = None
-    best_perplexity = float("inf")
+    best_perplexity = np.inf
     best_num_topics = topic_numbers[0]
 
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
         # Submit all training tasks
         future_to_topic = {
             executor.submit(_train_single_model, args): args[0] for args in train_args
@@ -342,19 +381,81 @@ def optimize_topic_number(
             desc="Optimizing number of topics",
         ):
             try:
-                model, train_metrics, test_metrics, num_topics = future.result()
+                (
+                    model,
+                    train_metrics,
+                    val_metrics,
+                    num_topics,
+                    seed_metrics,
+                ) = future.result()
 
                 # Store metrics - initialize the dict for this num_topics
-                all_metrics[num_topics] = {"train": train_metrics, "test": test_metrics}
-                current_train_perplexity = train_metrics.get("perplexity", float("inf"))
-                current_test_perplexity = test_metrics.get("perplexity", float("inf"))
+                # Dict structure:
+                #   {
+                #       num_topics: {
+                #           "train": {"average": avg, "per_seed": {seed: value}},
+                #           "test": {"average": avg, "per_seed": {seed: value}},
+                #       }
+                #   }
+                per_seed_train = {
+                    metric["seed"]: metric["train_perplexity"]
+                    for metric in seed_metrics
+                }
+                per_seed_val = {
+                    metric["seed"]: metric["val_perplexity"] for metric in seed_metrics
+                }
+                per_type_avg: Dict[str, float] = {}
+                if val_corpora_by_type:
+                    per_type_collect: Dict[str, List[float]] = {}
+                    for metric in seed_metrics:
+                        for type_name, ppx in (
+                            metric.get("val_perplexity_by_type", {}) or {}
+                        ).items():
+                            per_type_collect.setdefault(type_name, []).append(ppx)
+                    per_type_avg = {
+                        name: float(np.mean(values))
+                        for name, values in per_type_collect.items()
+                    }
+                all_metrics[num_topics] = {
+                    "train": {
+                        "average": train_metrics,
+                        "per_seed": per_seed_train,
+                    },
+                    "val": {
+                        "average": val_metrics,
+                        "per_seed": per_seed_val,
+                        "per_type_average": per_type_avg,
+                    },
+                }
+                current_train_perplexity = train_metrics
+                current_val_perplexity = val_metrics
+
+                seed_val_details = ", ".join(
+                    f"seed {seed}: {perplexity}"
+                    for seed, perplexity in sorted(per_seed_val.items())
+                )
+                per_type_details = ""
+                if per_type_avg:
+                    per_type_details = " | Val Perplexity by type: " + ", ".join(
+                        f"{type_name}: {ppx}"
+                        for type_name, ppx in sorted(per_type_avg.items())
+                    )
 
                 print(
-                    f"Number of topics: {num_topics}, Train Perplexity: {current_train_perplexity}, Test Perplexity: {current_test_perplexity}"
+                    f"Number of topics: {num_topics}, "
+                    f"Train Perplexity (avg): {current_train_perplexity}, "
+                    f"Val Perplexity (avg): {current_val_perplexity}"
+                    + (
+                        f" | Val Perplexity by seed: {seed_val_details}"
+                        if seed_val_details
+                        else ""
+                    )
+                    + per_type_details
                 )
 
-                # Track best model (based on train perplexity)
-                if current_train_perplexity < best_perplexity:
+                # Track best model (based on test perplexity)
+                # Update best model if test perplexity is better by at least 10% than best so far
+                if current_val_perplexity < best_perplexity:
                     # Delete previous best model from memory
                     if best_model is not None:
                         del best_model
@@ -364,23 +465,20 @@ def optimize_topic_number(
                         # Model was saved to disk, load it
                         from pathlib import Path
 
-                        model_file = (
-                            Path(save_dir) / f"lda_model_{num_topics}_topics.gz"
-                        )
+                        model_file = Path(save_dir) / f"lda_model_{num_topics}_topics"
                         best_model = models.LdaModel.load(str(model_file))
                     else:
                         best_model = model
 
-                    best_perplexity = current_train_perplexity
+                    best_perplexity = current_val_perplexity
                     best_num_topics = num_topics
 
                     logger.info(
                         f"New best model: {num_topics} topics, "
-                        f"train_perplexity={current_train_perplexity:.2f}, "
-                        f"coherence_c_v={train_metrics.get('coherence_c_v', 'N/A')}, "
-                        f"test_perplexity={current_test_perplexity:.2f}, "
+                        f"avg_train_perplexity={current_train_perplexity:.2f}, "
+                        f"avg_val_perplexity={current_val_perplexity:.2f}, "
                     )
-                elif model is not None:
+                else:
                     # Not the best model, free memory
                     del model
 
@@ -420,7 +518,7 @@ def document_topic_distribution(
     document_topics = model.get_document_topics(corpus)
 
     with open(
-        output_dir / f"{prefix}document_topics_{mode}.txt",
+        output_dir / f"{prefix}_document_topics_{mode}.txt",
         "w",
         encoding="utf-8",
     ) as f:

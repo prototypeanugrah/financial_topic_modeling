@@ -1,23 +1,21 @@
 # Data preprocessing settings
 preprocessing:
-  tfidf_filtering:
-    enabled: true
-    threshold: 0.01
-    remove_missing_words: true
-  allowed_postags:
-    - NOUN
-    - ADJ
-    - VERB
-    - ADV
+  batch_size: 200
+  num_docs: 0
+  num_cores_preprocessing: 6
+  test_perc: 0.1
   stop_words_extra: ./stopwords
   spacy_model: en_core_web_sm
   spacy_disabled:
     - parser
     - ner
-  debug:
-    - enabled: false
+  allowed_postags:
+    - NOUN
+    - ADJ
+    - VERB
+    - ADV
   filter_extremes:
-    no_below: 5 # filter out words that appear in less than 10 documents. Increasing this reduces the number of tokens in the dictionary.
+    no_below: 5 # filter out words that appear in less than 5 documents. Increasing this reduces the number of tokens in the dictionary.
     no_above: 0.5 # filter out words that appear in more than 50% of documents. Increasing this reduces the number of tokens in the dictionary.
     keep_n: 100000
 
@@ -26,28 +24,20 @@ lda:
   save_intermediate_models: true  # Save models to disk during optimization to reduce memory usage
   topic_range:
     start: 5 # start at 5 topics
-    limit: 100 # limit at 50 topics
-    step: 10
+    limit: 55 # limit at 50 topics
+    step: 5
   gensim:
-    ipo_params:
-      random_state: 100
+    random_seeds: [42, 100, 3]
+    num_cores_lda: 1
+    params:
       update_every: 1
-      chunksize: 128
-      iterations: 1000
-      passes: 10
+      chunksize: 3000
+      iterations: 300
+      passes: 25
       alpha: auto
       eta: auto
       per_word_topics: false
-    analyst_params:
-      random_state: 100
-      update_every: 1
-      chunksize: 1024
-      iterations: 200
-      passes: 50
-      alpha: auto
-      eta: auto
-      per_word_topics: false
-
+      
 # Visualization settings
 visualization:
   wordcloud:

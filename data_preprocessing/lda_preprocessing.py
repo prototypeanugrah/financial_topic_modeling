@@ -10,14 +10,18 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union, cast
 
+import numpy as np
+import pandas as pd
 import regex as re
 from gensim import corpora, models
 from gensim.utils import simple_preprocess
 from nltk.corpus import stopwords
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
+
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +110,6 @@ def load_stopwords_from_file(filepath: str) -> List[str]:
 
     Raises:
         FileNotFoundError: If the stopwords file doesn't exist
-        UnicodeDecodeError: If there's an encoding issue reading the file
     """
     try:
         with open(filepath, "r", encoding="utf-8") as file:
@@ -114,16 +117,6 @@ def load_stopwords_from_file(filepath: str) -> List[str]:
             return [word.strip().lower() for word in file.readlines() if word.strip()]
     except FileNotFoundError:
         logger.warning("Stopwords file not found: %s", filepath)
-        return []
-    except UnicodeDecodeError:
-        logger.error("Encoding error reading stopwords file: %s", filepath)
-        return []
-    except Exception as e:
-        logger.error(
-            "Unexpected error reading stopwords file %s: %s",
-            filepath,
-            str(e),
-        )
         return []
 
 
@@ -365,41 +358,29 @@ def pre_processing_helper(
 ) -> Tuple[
     corpora.Dictionary,  # dictionary
     List[List[Tuple[int, int]]],  # bow_corpus
-    List[List[Tuple[int, float]]],  # tfidf_corpus
 ]:
     # Create Dictionary - mapping of unique ids to words in the documents
     dic = corpora.Dictionary(texts)
     logger.info("Number of unique tokens in %s mode: %d", mode, len(dic))
 
-    # Filter out tokens that appear in less than 3 documents or more than 80%
-    # of documents
-    dic.filter_extremes(
-        no_below=config.get("filter_extremes", {}).get("no_below", 3),
-        no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
-        keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
-    )
-    logger.info(
-        "Number of unique tokens after filtering in %s mode: %d",
-        mode,
-        len(dic),
-    )
+    # # Filter out tokens that appear in less than 3 documents or more than 80%
+    # # of documents
+    # dic.filter_extremes(
+    #     no_below=config.get("filter_extremes", {}).get("no_below", 3),
+    #     no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
+    #     keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
+    # )
+    # logger.info(
+    #     "Number of unique tokens after filtering in %s mode: %d",
+    #     mode,
+    #     len(dic),
+    # )
 
     bc = [dic.doc2bow(text) for text in texts]
-
-    # Create Tf-IDF model
-    tfidf = models.TfidfModel(
-        corpus=bc,
-        id2word=dic,
-    )
-
-    # Apply TF-IDF transformation to the corpus
-    tfc = tfidf[bc]
-    del tfidf
 
     return (
         dic,
         bc,
-        tfc,
     )
 
 
@@ -600,7 +581,6 @@ def pre_processing_gensim(
     (
         dictionary_gensim,
         bow_corpus_gensim,
-        tfidf_corpus_gensim,
     ) = pre_processing_helper(all_texts, mode, config)
 
     # Validate preprocessing output
@@ -626,32 +606,23 @@ def pre_processing_gensim(
     return (
         dictionary_gensim,
         bow_corpus_gensim,
-        tfidf_corpus_gensim,
         all_texts,
     )
 
 
-def validate_preprocessing_output(
-    texts: List[List[str]],
-    dictionary: corpora.Dictionary,
-    corpus: List[List[Tuple[int, int]]],
-    mode: str,
-) -> bool:
+def check_empty_docs(texts: List[List[str]], mode: str) -> bool:
     """
-    Validate preprocessing output with minimal sanity checks.
+    Check for empty documents in the text data.
 
     Args:
         texts: List of preprocessed document texts
-        dictionary: Gensim dictionary mapping word IDs to words
-        corpus: Bag of words corpus
         mode: Processing mode (train/test)
 
     Returns:
-        bool: True if validation passes, False otherwise
+        bool: True if empty document ratio is less than 50%, False otherwise
     """
-
     # Check for empty documents
-    empty_docs = sum(1 for doc in texts if len(doc) == 0)
+    empty_docs = np.sum(np.array([len(doc) == 0 for doc in texts]))
     empty_ratio = empty_docs / len(texts) if texts else 1.0
 
     if empty_ratio > 0.5:
@@ -662,36 +633,36 @@ def validate_preprocessing_output(
             len(texts),
             empty_ratio * 100,
         )
-
-    # Check vocabulary size
-    vocab_size = len(dictionary)
-    if vocab_size < 100:
-        logger.error(
-            "[%s] Vocabulary too small: %d terms",
-            mode,
-            vocab_size,
-        )
         return False
-    elif vocab_size > 100000:
-        logger.warning(
-            "[%s] Very large vocabulary: %d terms",
-            mode,
-            vocab_size,
-        )
+    return True
 
-    # Check document lengths
+
+def check_document_lengths(texts: List[List[str]], mode: str) -> bool:
+    """
+    Check document lengths in the text data.
+
+    Args:
+        texts: List of preprocessed document texts
+        mode: Processing mode (train/test)
+
+    Returns:
+        bool: True if document lengths are valid, False otherwise
+    """
+    # Check document stats
     if texts:
-        doc_lengths = [len(doc) for doc in texts]
-        avg_length = sum(doc_lengths) / len(doc_lengths)
-        max_length = max(doc_lengths)
-        min_length = min(doc_lengths)
+        doc_lengths = np.array([len(doc) for doc in texts])
+        max_length = np.max(doc_lengths)
+        min_length = np.min(doc_lengths)
+        avg_length = np.mean(doc_lengths)
+        median_length = np.median(doc_lengths)
 
         logger.info(
-            "[%s] Document length stats - Min: %d, Max: %d, Avg: %.1f",
+            "[%s] Document length stats - Min: %d, Max: %d, Avg: %.1f, Median: %.1f",
             mode,
             min_length,
             max_length,
             avg_length,
+            median_length,
         )
 
         if max_length < 10:
@@ -702,6 +673,23 @@ def validate_preprocessing_output(
             )
             return False
 
+    return True
+
+
+def check_corpus_text_alignment(
+    texts: List[List[str]], corpus: List[List[Tuple[int, int]]], mode: str
+) -> bool:
+    """
+    Check corpus-text alignment.
+
+    Args:
+        texts: List of preprocessed document texts
+        corpus: Bag of words corpus
+        mode: Processing mode (train/test)
+
+    Returns:
+        bool: True if corpus-text alignment is valid, False otherwise
+    """
     # Check corpus-text alignment
     if len(corpus) != len(texts):
         logger.error(
@@ -710,6 +698,34 @@ def validate_preprocessing_output(
             len(corpus),
             len(texts),
         )
+        return False
+    return True
+
+
+def validate_preprocessing_output(
+    texts: List[List[str]],
+    corpus: List[List[Tuple[int, int]]],
+    mode: str,
+) -> bool:
+    """
+    Validate preprocessing output with minimal sanity checks.
+
+    Args:
+        texts: List of preprocessed document texts
+        corpus: Bag of words corpus
+        mode: Processing mode (train/test)
+
+    Returns:
+        bool: True if validation passes, False otherwise
+    """
+
+    if not check_empty_docs(texts, mode):
+        return False
+
+    if not check_document_lengths(texts, mode):
+        return False
+
+    if not check_corpus_text_alignment(texts, corpus, mode):
         return False
 
     return True
@@ -727,13 +743,96 @@ def test_corpus_filtering(
         test_texts (List[List[str]]): List of tokenized documents for the test corpus
 
     Returns:
-        Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, float]]]]:
-        Tuple containing:
-        - Filtered bow corpus
+        List[List[Tuple[int, int]]]: Filtered bow corpus
+        Example:
+        Dictionary: {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4}
+        Test texts: [['a', 'b', 'c'], ['b', 'c'], ['a', 'b', 'b', 'e']]
+        Filtered bow corpus: [
+            [(0, 1), (1, 1), (2, 1)],
+            [(1, 1), (2, 1)],
+            [(0, 1), (1, 2), (4, 1)],
+        ]
     """
     bow_corpus = [dic.doc2bow(text) for text in test_texts]
 
     return bow_corpus
+
+
+def load_stop_words(config: Dict) -> set:
+    """
+    Load stop words from a configuration dictionary.
+    """
+    # Get base stopwords from NLTK
+    stop_words = set(stopwords.words("english"))
+
+    # Define paths to additional stopwords files
+    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
+    stopwords_files = [
+        os.path.join(stopwords_files_path, file)
+        for file in os.listdir(stopwords_files_path)
+    ]
+
+    for stopwords_file in stopwords_files:
+        try:
+            additional_stopwords = load_stopwords_from_file(stopwords_file)
+            stop_words.update(additional_stopwords)
+        except Exception as e:
+            logger.warning(
+                "Could not load stopwords from %s: %s", stopwords_file, str(e)
+            )
+    return stop_words
+
+
+def preprocess_mp(
+    batch_documents: List[str],
+    stop_words: set,
+    num_cores: int,
+    config: Dict,
+) -> List[List[str]]:
+    # Prepare arguments for parallel processing
+    process_args = [(doc, stop_words) for doc in batch_documents]
+
+    # Use ProcessPoolExecutor for CPU-bound preprocessing with spaCy worker initialization
+    with ProcessPoolExecutor(
+        max_workers=num_cores,
+        initializer=init_worker,
+        initargs=(
+            config.get("spacy_model", "en_core_web_sm"),
+            config.get("spacy_disabled", ["parser", "ner"]),
+            config.get("allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]),
+        ),
+    ):
+        processed_batch = process_map(
+            process_document_chunk,
+            process_args,
+            max_workers=num_cores,
+            chunksize=1,
+        )
+
+    return processed_batch
+
+
+def build_bigrams_trigrams(
+    all_texts: List[List[str]],
+) -> Tuple[models.phrases.Phraser, models.phrases.Phraser]:
+    # Build bigram and trigram models on ALL texts
+    bigram = models.Phrases(
+        all_texts,
+        min_count=5,
+        threshold=100,
+    )
+    trigram = models.Phrases(
+        bigram[all_texts],
+        threshold=100,
+    )
+
+    # Faster way to get a sentence clubbed as a trigram/bigram
+    bigram_mod = models.phrases.Phraser(bigram)
+    trigram_mod = models.phrases.Phraser(trigram)
+
+    del bigram, trigram
+
+    return bigram_mod, trigram_mod
 
 
 def create_shared_dictionary(
@@ -755,65 +854,34 @@ def create_shared_dictionary(
     """
     num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
 
-    # Get base stopwords from NLTK
-    stop_words = set(stopwords.words("english"))
-
-    # Define paths to additional stopwords files
-    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
-    stopwords_files = [
-        os.path.join(stopwords_files_path, file)
-        for file in os.listdir(stopwords_files_path)
-    ]
-
-    # Add domain-specific stopwords from files
-    for stopwords_file in stopwords_files:
-        try:
-            additional_stopwords = load_stopwords_from_file(stopwords_file)
-            stop_words.update(additional_stopwords)
-        except Exception as e:
-            logger.warning(
-                "Could not load stopwords from %s: %s", stopwords_file, str(e)
-            )
+    stop_words = load_stop_words(config)
 
     all_texts = []
 
-    # Process all document generators
+    # Process all document generators.
+    # First - ipo documents
+    # Second - analyst documents
     for gen_idx, documents_generator in enumerate(documents_generators):
         logger.info(
-            f"Processing document generator {gen_idx + 1}/{len(documents_generators)}"
+            f"Processing document generator {'ipo' if gen_idx == 0 else 'analyst'}/{len(documents_generators)}"
         )
 
         documents_list = list(documents_generator)
 
         for batch_documents in tqdm(
             documents_list,
-            desc=f"Processing generator {gen_idx + 1} batches for shared dictionary",
+            desc=f"Processing generator {'ipo' if gen_idx == 0 else 'analyst'} batches for shared dictionary",
         ):
             if not batch_documents:
                 logger.warning("Empty batch received, skipping")
                 continue
 
-            # Prepare arguments for parallel processing
-            process_args = [(doc, stop_words) for doc in batch_documents]
-
-            # Use ProcessPoolExecutor for CPU-bound preprocessing with spaCy worker initialization
-            with ProcessPoolExecutor(
-                max_workers=num_cores,
-                initializer=init_worker,
-                initargs=(
-                    config.get("spacy_model", "en_core_web_sm"),
-                    config.get("spacy_disabled", ["parser", "ner"]),
-                    config.get("allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]),
-                ),
-            ):
-                processed_batch = process_map(
-                    process_document_chunk,
-                    process_args,
-                    max_workers=num_cores,
-                    desc=f"Processing documents for shared dict (gen {gen_idx + 1})",
-                    chunksize=1,
-                )
-
+            processed_batch = preprocess_mp(
+                batch_documents=batch_documents,
+                stop_words=stop_words,
+                num_cores=num_cores,
+                config=config,
+            )
             all_texts.extend(processed_batch)
             del processed_batch
 
@@ -824,41 +892,29 @@ def create_shared_dictionary(
     logger.info(f"Total documents processed for shared dictionary: {len(all_texts)}")
 
     # Build bigram and trigram models on ALL texts
-    bigram = models.Phrases(
-        all_texts,
-        min_count=5,
-        threshold=100,
-    )
-    trigram = models.Phrases(
-        bigram[all_texts],
-        threshold=100,
-    )
-
-    # Faster way to get a sentence clubbed as a trigram/bigram
-    bigram_mod = models.phrases.Phraser(bigram)
-    trigram_mod = models.phrases.Phraser(trigram)
+    bigram_mod, trigram_mod = build_bigrams_trigrams(all_texts)
 
     # Apply bigrams and trigrams to all texts
     all_texts = make_bigrams(all_texts, bigram_mod)
     all_texts = make_trigrams(all_texts, trigram_mod, bigram_mod)
 
     # Clean up n-gram models to save memory
-    del bigram, trigram, bigram_mod, trigram_mod
+    del bigram_mod, trigram_mod
 
     # Create Dictionary - mapping of unique ids to words in the documents
     shared_dic = corpora.Dictionary(all_texts)
     logger.info("Number of unique tokens in shared dictionary: %d", len(shared_dic))
 
-    # Filter out tokens that appear in less than N documents or more than X% of documents
-    shared_dic.filter_extremes(
-        no_below=config.get("filter_extremes", {}).get("no_below", 3),
-        no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
-        keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
-    )
-    logger.info(
-        "Number of unique tokens after filtering in shared dictionary: %d",
-        len(shared_dic),
-    )
+    # # Filter out tokens that appear in less than N documents or more than X% of documents
+    # shared_dic.filter_extremes(
+    #     no_below=config.get("filter_extremes", {}).get("no_below", 3),
+    #     no_above=config.get("filter_extremes", {}).get("no_above", 0.8),
+    #     keep_n=config.get("filter_extremes", {}).get("keep_n", 100000),
+    # )
+    # logger.info(
+    #     "Number of unique tokens after filtering in shared dictionary: %d",
+    #     len(shared_dic),
+    # )
 
     return shared_dic
 
@@ -891,24 +947,7 @@ def pre_processing_with_dictionary(
     num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
 
     # Get base stopwords from NLTK
-    stop_words = set(stopwords.words("english"))
-
-    # Define paths to additional stopwords files
-    stopwords_files_path = config.get("stop_words_extra", "./stopwords")
-    stopwords_files = [
-        os.path.join(stopwords_files_path, file)
-        for file in os.listdir(stopwords_files_path)
-    ]
-
-    # Add domain-specific stopwords from files
-    for stopwords_file in stopwords_files:
-        try:
-            additional_stopwords = load_stopwords_from_file(stopwords_file)
-            stop_words.update(additional_stopwords)
-        except Exception as e:
-            logger.warning(
-                "Could not load stopwords from %s: %s", stopwords_file, str(e)
-            )
+    stop_words = load_stop_words(config)
 
     all_texts = []
     documents_list = list(documents_generator)
@@ -921,27 +960,12 @@ def pre_processing_with_dictionary(
             logger.warning("Empty batch received, skipping")
             continue
 
-        # Prepare arguments for parallel processing
-        process_args = [(doc, stop_words) for doc in batch_documents]
-
-        # Use ProcessPoolExecutor for CPU-bound preprocessing
-        with ProcessPoolExecutor(
-            max_workers=num_cores,
-            initializer=init_worker,
-            initargs=(
-                config.get("spacy_model", "en_core_web_sm"),
-                config.get("spacy_disabled", ["parser", "ner"]),
-                config.get("allowed_postags", ["NOUN", "ADJ", "VERB", "ADV"]),
-            ),
-        ):
-            processed_batch = process_map(
-                process_document_chunk,
-                process_args,
-                max_workers=num_cores,
-                desc=f"Processing {mode} documents",
-                chunksize=1,
-            )
-
+        processed_batch = preprocess_mp(
+            batch_documents=batch_documents,
+            stop_words=stop_words,
+            num_cores=num_cores,
+            config=config,
+        )
         all_texts.extend(processed_batch)
         del processed_batch
 
@@ -950,26 +974,21 @@ def pre_processing_with_dictionary(
         return [], [], []
 
     # Build bigram and trigram models on ALL texts
-    bigram = models.Phrases(
-        all_texts,
-        min_count=5,
-        threshold=100,
-    )
-    trigram = models.Phrases(
-        bigram[all_texts],
-        threshold=100,
-    )
-
-    # Faster way to get a sentence clubbed as a trigram/bigram
-    bigram_mod = models.phrases.Phraser(bigram)
-    trigram_mod = models.phrases.Phraser(trigram)
+    bigram_mod, trigram_mod = build_bigrams_trigrams(all_texts)
 
     # Apply bigrams and trigrams to all texts
     all_texts = make_bigrams(all_texts, bigram_mod)
     all_texts = make_trigrams(all_texts, trigram_mod, bigram_mod)
 
     # Clean up n-gram models to save memory
-    del bigram, trigram, bigram_mod, trigram_mod
+    del bigram_mod, trigram_mod
+
+    # Validate preprocessing output
+    if not validate_preprocessing_output(all_texts, shared_dictionary, mode):
+        logger.error(
+            "Preprocessing validation failed for %s mode",
+            mode,
+        )
 
     # Use the shared dictionary to create BOW corpus
     bow_corpus = [shared_dictionary.doc2bow(text) for text in all_texts]
@@ -979,3 +998,317 @@ def pre_processing_with_dictionary(
     )
 
     return bow_corpus, all_texts
+
+
+def collect_processed_texts(
+    document_sources: List[Tuple[Optional[str], Iterator[List[str]]]],
+    num_cores: int,
+    config: Dict,
+    mode: str,
+    checkpoint_dir: Optional[Union[str, Path]] = None,
+    resume: bool = False,
+) -> Tuple[List[List[str]], Optional[Path]]:
+    """Collect and preprocess documents from one or more generators."""
+
+    logger = logging.getLogger(__name__)
+
+    # Normalize sources to list of (label, generator)
+    if isinstance(document_sources, (list, tuple)):
+        normalized_sources: List[Tuple[Optional[str], Iterator[List[str]]]] = []
+        for item in document_sources:
+            if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                label, generator = item
+            else:
+                label, generator = None, cast(Iterator[List[str]], item)
+            normalized_sources.append((label, generator))
+    else:
+        normalized_sources = [(None, cast(Iterator[List[str]], document_sources))]
+
+    num_cores = min(num_cores, mp.cpu_count()) if num_cores else mp.cpu_count()
+    stop_words = load_stop_words(config)
+
+    checkpoint_path: Optional[Path] = None
+    processed_batches: List[int] = []
+
+    if checkpoint_dir:
+        checkpoint_path = Path(checkpoint_dir) / f"{mode}_checkpoint.json"
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if resume and checkpoint_path.exists():
+            try:
+                with open(checkpoint_path, "r", encoding="utf-8") as f:
+                    checkpoint_data = json.load(f)
+                processed_batches = checkpoint_data.get("processed_batches", [])
+                logger.info(
+                    "Resuming %s from batch %d",
+                    mode,
+                    len(processed_batches),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load checkpoint for %s: %s. Starting fresh.",
+                    mode,
+                    exc,
+                )
+                processed_batches = []
+
+    all_texts: List[List[str]] = []
+    batch_num = 0
+    any_batches = False
+
+    for source_idx, (label, generator) in enumerate(normalized_sources, start=1):
+        documents_list = list(generator)
+        if not documents_list:
+            continue
+
+        any_batches = True
+        source_label = label or (
+            f"{mode} source {source_idx}" if mode else f"source {source_idx}"
+        )
+
+        for batch_documents in tqdm(
+            documents_list,
+            desc=f"Processing {source_label} batches",
+        ):
+            batch_num += 1
+
+            if resume and batch_num <= len(processed_batches):
+                logger.debug(
+                    "Skipping batch %d for %s (already processed)",
+                    batch_num,
+                    source_label,
+                )
+                continue
+
+            if not batch_documents:
+                logger.warning("Empty batch received for %s, skipping", source_label)
+                continue
+
+            processed_batch = preprocess_mp(
+                batch_documents=batch_documents,
+                stop_words=stop_words,
+                num_cores=num_cores,
+                config=config,
+            )
+            all_texts.extend(processed_batch)
+            del processed_batch
+
+            if checkpoint_path:
+                processed_batches.append(batch_num)
+                checkpoint_data = {
+                    "processed_batches": processed_batches,
+                    "timestamp": datetime.now().isoformat(),
+                    "mode": mode,
+                    "total_documents": len(all_texts),
+                }
+                try:
+                    with open(checkpoint_path, "w", encoding="utf-8") as f:
+                        json.dump(checkpoint_data, f, indent=2)
+                except Exception as exc:
+                    logger.warning("Failed to save checkpoint for %s: %s", mode, exc)
+
+    if not any_batches:
+        logger.error("No documents were provided for processing in %s mode", mode)
+
+    if not all_texts and checkpoint_path and checkpoint_path.exists():
+        logger.warning(
+            "No valid documents processed for %s; retaining checkpoint at %s",
+            mode,
+            checkpoint_path,
+        )
+
+    return all_texts, checkpoint_path
+
+
+def prepare_dictionary_and_corpus(
+    texts: List[List[str]],
+    config: Dict,
+    mode: str,
+    dictionary: Optional[corpora.Dictionary] = None,
+    validate: bool = True,
+) -> Tuple[corpora.Dictionary, List[List[Tuple[int, int]]], List[List[str]]]:
+    """Apply n-gram models and build corpus (optionally creating the dictionary)."""
+
+    logger = logging.getLogger(__name__)
+
+    if not texts:
+        if dictionary is None:
+            dictionary = corpora.Dictionary()
+        return dictionary, [], []
+
+    bigram_mod, trigram_mod = build_bigrams_trigrams(texts)
+    texts = make_bigrams(texts, bigram_mod)
+    texts = make_trigrams(texts, trigram_mod, bigram_mod)
+    del bigram_mod, trigram_mod
+
+    if dictionary is None:
+        dictionary, bow_corpus = pre_processing_helper(texts, mode, config)
+    else:
+        bow_corpus = [dictionary.doc2bow(text) for text in texts]
+
+    if validate and not validate_preprocessing_output(texts, bow_corpus, mode):
+        logger.warning("Preprocessing validation failed for %s mode", mode)
+
+    return dictionary, bow_corpus, texts
+
+
+def preprocess_documents_build_dictionary(
+    documents_generator: Iterator[List[str]],
+    num_cores: int,
+    config: Dict,
+    mode: str,
+    checkpoint_dir: Optional[Union[str, Path]] = None,
+    resume: bool = False,
+    validate: bool = True,
+) -> Tuple[corpora.Dictionary, List[List[Tuple[int, int]]], List[List[str]]]:
+    """Preprocess documents and create a fresh dictionary and corpus."""
+
+    all_texts, checkpoint_path = collect_processed_texts(
+        document_sources=documents_generator,
+        num_cores=num_cores,
+        config=config,
+        mode=mode,
+        checkpoint_dir=checkpoint_dir,
+        resume=resume,
+    )
+
+    if not all_texts:
+        return corpora.Dictionary(), [], []
+
+    dictionary, bow_corpus, texts = prepare_dictionary_and_corpus(
+        texts=all_texts,
+        config=config,
+        mode=mode,
+        dictionary=None,
+        validate=validate,
+    )
+
+    if checkpoint_path and checkpoint_path.exists():
+        try:
+            checkpoint_path.unlink()
+            logger.debug(
+                "Checkpoint file %s removed after successful %s preprocessing",
+                checkpoint_path,
+                mode,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove checkpoint file %s: %s",
+                checkpoint_path,
+                exc,
+            )
+
+    return dictionary, bow_corpus, texts
+
+
+def preprocess_documents_with_dictionary(
+    documents_generator: Iterator[List[str]],
+    shared_dictionary: corpora.Dictionary,
+    num_cores: int,
+    config: Dict,
+    mode: str,
+    validate: bool = True,
+) -> Tuple[List[List[Tuple[int, int]]], List[List[str]]]:
+    """Preprocess documents using a provided dictionary."""
+
+    all_texts, _ = collect_processed_texts(
+        document_sources=documents_generator,
+        num_cores=num_cores,
+        config=config,
+        mode=mode,
+    )
+
+    if not all_texts:
+        return [], []
+
+    _, bow_corpus, texts = prepare_dictionary_and_corpus(
+        texts=all_texts,
+        config=config,
+        mode=mode,
+        dictionary=shared_dictionary,
+        validate=validate,
+    )
+
+    return bow_corpus, texts
+
+
+def build_dictionary_from_generators(
+    documents_generators: Sequence[Iterator[List[str]]],
+    num_cores: int,
+    config: Dict,
+    source_labels: Optional[Sequence[str]] = None,
+    validate: bool = False,
+) -> corpora.Dictionary:
+    """Create a dictionary from multiple generators using the modular pipeline."""
+
+    if source_labels and len(source_labels) != len(documents_generators):
+        raise ValueError("source_labels must match the number of document generators")
+
+    normalized_sources: List[Tuple[Optional[str], Iterator[List[str]]]] = []
+    if source_labels:
+        for label, generator in zip(source_labels, documents_generators):
+            normalized_sources.append(
+                (label, generator)
+            )  # [('ipo', 'ipo_generator'), ('analyst', 'analyst_generator')]
+    else:
+        for generator in documents_generators:
+            normalized_sources.append(
+                (None, generator)
+            )  # [(None, 'ipo_generator'), (None, 'analyst_generator')]
+
+    all_texts, _ = collect_processed_texts(
+        document_sources=normalized_sources,
+        num_cores=num_cores,
+        config=config,
+        mode="shared",
+    )
+
+    dictionary, _, _ = prepare_dictionary_and_corpus(
+        texts=all_texts,
+        config=config,
+        mode="shared",
+        dictionary=None,
+        validate=validate,
+    )
+
+    return dictionary
+
+
+if __name__ == "__main__":
+    batch_size = 100
+    num_docs = 0
+    num_cores = 8
+
+    # Load CSV and extract file paths for both report types
+    df = pd.read_csv("data/final_analyst_reports_for_latest_s1_filings_extracted.csv")
+
+    # Extract file paths for both report types
+    ipo_file_paths = df["s1_path"].dropna().tolist()
+    analyst_file_paths = df["analyst_report_path"].dropna().tolist()
+    config = utils.load_config("config.yaml")
+
+    # Load all documents for shared dictionary creation
+    ipo_all_docs_generator, _, _ = utils.load_files_in_batches_from_paths(
+        file_paths=ipo_file_paths,
+        batch_size=batch_size,
+        num_docs=num_docs,
+        test_perc=0.1,  # Load all as training for dictionary
+    )
+
+    analyst_all_docs_generator, _, _ = utils.load_files_in_batches_from_paths(
+        file_paths=analyst_file_paths,
+        batch_size=batch_size,
+        num_docs=num_docs,
+        test_perc=0.1,  # Load all as training for dictionary
+    )
+
+    # Create shared dictionary from both document types
+    shared_dictionary = build_dictionary_from_generators(
+        documents_generators=[
+            ipo_all_docs_generator,
+            analyst_all_docs_generator,
+        ],
+        num_cores=num_cores,
+        config=config["preprocessing"],
+        source_labels=["ipo", "analyst"],
+    )
