@@ -236,6 +236,39 @@ def _train_full_model_and_export(
     ]
 
     rows: List[List[str]] = []
+
+    export_dir = output_dir / "full_model_export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    topic_word_distribution = {
+        f"topic_{topic_idx}": [
+            [float(prob), dictionary[token_id]]
+            for token_id, prob in enumerate(word_probs)
+        ]
+        for topic_idx, word_probs in enumerate(topic_word_probs)
+    }
+
+    doc_topic_distribution = {}
+    for label, bow in zip(labels, corpus):
+        doc_topics = final_model.get_document_topics(bow, minimum_probability=0.0)
+        doc_topic_distribution[label] = [
+            [float(prob), int(topic_id)] for topic_id, prob in doc_topics
+        ]
+
+    with open(
+        export_dir / f"topic_word_distribution_{best_topic}_topics.json",
+        "w",
+        encoding="utf-8",
+    ) as fh:
+        json.dump(topic_word_distribution, fh, indent=2)
+
+    with open(
+        export_dir / f"doc_topic_distribution_{best_topic}_topics.json",
+        "w",
+        encoding="utf-8",
+    ) as fh:
+        json.dump(doc_topic_distribution, fh, indent=2)
+
     for label, bow in zip(labels, corpus):
         if not bow:
             continue
@@ -247,8 +280,6 @@ def _train_full_model_and_export(
         formatted_probs = [f"{prob:.6f}" for prob in word_probs]
         rows.append([label] + formatted_probs)
 
-    export_dir = output_dir / "full_model_export"
-    export_dir.mkdir(parents=True, exist_ok=True)
     csv_path = export_dir / f"dominant_topic_word_probs_{best_topic}_topics.csv"
 
     with open(csv_path, "w", encoding="utf-8", newline="") as csv_file:
