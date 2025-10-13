@@ -1,3 +1,15 @@
+"""
+This file contains the main function for running the cross-validated topic
+modeling for IPO and analyst reports.
+
+Usage:
+uv run main.py
+    --config config.yaml
+    --output_subdir outputs/test_run
+    --folds 5
+    --no_ngrams
+"""
+
 import argparse
 import csv
 import json
