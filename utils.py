@@ -2,9 +2,10 @@ import logging
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import yaml
+from typing import NamedTuple
 
 # Setup logging - modify to only show INFO level
 logging.basicConfig(
@@ -13,6 +14,16 @@ logging.basicConfig(
 )
 logging.getLogger("gensim").setLevel(logging.ERROR)  # For gensim
 logger = logging.getLogger(__name__)
+
+
+class PairRecord(NamedTuple):
+    """
+    Lightweight structure describing an IPO/analyst document pair.
+    """
+
+    pair_id: int
+    ipo_path: str
+    analyst_path: str
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -29,18 +40,26 @@ def load_config(config_path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def setup_output_directory(config: Dict) -> Path:
+def setup_output_directory(
+    config: Dict,
+    subdir: Optional[str] = None,
+) -> Path:
     """
     Create timestamped output directory for results.
 
     Args:
         config: Dictionary containing configuration
+        subdir: Optional subdirectory name relative to the base output folder
 
     Returns:
         Path to output directory
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(config["output"]["base_dir"]) / f"run_{timestamp}"
+    base_dir = Path(config["output"]["base_dir"])
+    if subdir:
+        output_dir = base_dir / Path(subdir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = base_dir / f"run_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
@@ -126,7 +145,6 @@ def load_splits_from_paths(
 ) -> Tuple[
     Iterator[List[Tuple[str, str]]],
     Iterator[List[Tuple[str, str]]],
-    Iterator[List[Tuple[str, str]]],
 ]:
     """
     Generator function to load files in batches from file paths with train-test split
@@ -138,57 +156,99 @@ def load_splits_from_paths(
         num_docs: Number of files to load (0 for all files)
         report_type: Type of report ('ipo' or 'analyst')
     Returns:
-        Tuple of (train_batches_iterator, val_batches_iterator, test_batches_iterator)
+        Tuple of (train_batches_iterator, test_batches_iterator)
     """
     if not file_paths:
         logger.error("No file paths provided")
-        return iter([]), iter([]), iter([])
-
-    if num_docs > 0:
-        file_paths = file_paths[:num_docs]
-
-    # Calculate split point
-    # Example: If test_perc is 0.1, then split_idx will be 0.9 of the (training + validation) files
-    # Keep val_perc = test_perc. The validation files are generated from the (training + validation) files.
-    # So the split will be like this:
-    # Training/validation/test = 0.8/0.1/0.1
+        return iter([]), iter([])
 
     if num_docs > 0:
         file_paths = file_paths[:num_docs]
 
     total_files = len(file_paths)
 
-    # First split into (train + validation) vs test
+    # Split into train vs test according to the requested percentage.
     test_count = int(total_files * test_perc)
-    train_val_count = total_files - test_count
+    train_count = total_files - test_count
 
-    test_files = file_paths[train_val_count:]
-    train_val_files = file_paths[:train_val_count]
-
-    # Derive validation portion from the (train + validation) pool
-    val_count = int(train_val_count * test_perc)
-    train_count = train_val_count - val_count
-
-    train_files = train_val_files[:train_count]
-    val_files = train_val_files[train_count:]
+    test_files = file_paths[train_count:]
+    train_files = file_paths[:train_count]
 
     if total_files:
         logger.info(
-            "%s - Split into %d train (%.1f%%), %d val (%.1f%%) and %d test (%.1f%%) files",
+            "%s - Split into %d train (%.1f%%) and %d test (%.1f%%) files",
             report_type,
             len(train_files),
             (len(train_files) / total_files) * 100,
-            len(val_files),
-            (len(val_files) / total_files) * 100,
             len(test_files),
             (len(test_files) / total_files) * 100,
         )
 
     return (
         BatchStream(train_files, batch_size),
-        BatchStream(val_files, batch_size),
         BatchStream(test_files, batch_size),
     )
+
+
+def load_pair_records(
+    csv_path: str,
+    *,
+    limit: int = 0,
+) -> List[PairRecord]:
+    """
+    Load IPO/analyst path pairs from a CSV file.
+
+    Args:
+        csv_path: Path to CSV containing at least `s1_path` and `analyst_report_path`.
+        limit: Optional maximum number of pairs to load (0 keeps all).
+
+    Returns:
+        Ordered list of PairRecord entries.
+    """
+    try:
+        import pandas as pd  # Local import to avoid mandatory dependency at module load
+    except ImportError as exc:
+        raise ImportError(
+            "pandas is required to load pair metadata. "
+            "Install pandas or adjust the pipeline to bypass CSV loading."
+        ) from exc
+
+    df = pd.read_csv(csv_path)
+
+    required_columns = {"s1_path", "analyst_report_path"}
+    missing_required = required_columns.difference(df.columns)
+    if missing_required:
+        raise KeyError(
+            f"Missing required column(s) {sorted(missing_required)} in {csv_path}"
+        )
+
+    records: List[PairRecord] = []
+    for _, row in df.iterrows():
+        ipo_path = row.get("s1_path")
+        analyst_path = row.get("analyst_report_path")
+
+        if not isinstance(ipo_path, str) or not ipo_path.strip():
+            continue
+        if not isinstance(analyst_path, str) or not analyst_path.strip():
+            continue
+
+        records.append(
+            PairRecord(
+                pair_id=len(records) + 1,
+                ipo_path=ipo_path,
+                analyst_path=analyst_path,
+            )
+        )
+
+        if limit and len(records) >= limit:
+            break
+
+    logger.info(
+        "Loaded %d paired documents from %s",
+        len(records),
+        csv_path,
+    )
+    return records
 
 
 def plot_perplexity_scores(
@@ -227,4 +287,43 @@ def plot_perplexity_scores(
 
     except Exception as e:
         logger.error(f"Failed to create perplexity plot: {e}")
+        raise
+
+
+def plot_cv_perplexity_scores(
+    topic_numbers: List[int],
+    perplexity_scores: List[float],
+    output_dir: Path,
+    mode: str,
+) -> None:
+    """
+    Plot and save averaged perplexity scores from cross-validation.
+    """
+    logger = logging.getLogger(__name__)
+
+    if not topic_numbers or not perplexity_scores:
+        logger.warning("No data provided for CV perplexity plot; skipping visualization.")
+        return
+
+    if len(topic_numbers) != len(perplexity_scores):
+        raise ValueError(
+            "topic_numbers and perplexity_scores must be the same length for plotting."
+        )
+
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(topic_numbers, perplexity_scores, marker="o")
+        plt.title(f"Cross-Validation Perplexity vs Topics ({mode.title()} Set)")
+        plt.xlabel("Number of Topics")
+        plt.ylabel("Perplexity Score")
+        plt.grid(True, alpha=0.3)
+
+        plot_path = output_dir / f"cv_perplexity_plot_{mode}.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+    except Exception as e:
+        logger.error(f"Failed to create CV perplexity plot: {e}")
         raise

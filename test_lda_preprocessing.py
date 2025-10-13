@@ -3,6 +3,7 @@ import logging
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -15,6 +16,7 @@ from nltk.corpus import stopwords
 from tqdm import tqdm
 
 import utils
+from utils import PairRecord
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +345,7 @@ def process_all_batches(
         stop_words: List of stopwords
         num_workers: Number of workers to use
         dataset_label: Label for the dataset
-        mode: Processing mode (train/val/test)
+        mode: Processing mode (train/test)
     Returns:
         Tuple containing:
         - processed_docs: List of processed documents
@@ -403,6 +405,8 @@ def check_empty_docs(
     analyst_paths: List[str],
     output_dir: Path,
     mode: str,
+    *,
+    return_metadata: bool = False,
 ) -> Tuple[List[List[str]], List[List[str]]]:
     if ipo_zero_token_docs:
         logger.warning(
@@ -427,6 +431,10 @@ def check_empty_docs(
     indices_to_remove = ipo_zero_indices.union(analyst_zero_indices)
 
     removed_pairs_info: List[Dict[str, Any]] = []
+
+    filtered_ipo_paths: List[str] = []
+    filtered_analyst_paths: List[str] = []
+    kept_pair_ids: List[int] = []
 
     if indices_to_remove:
         logger.warning(
@@ -470,6 +478,9 @@ def check_empty_docs(
             new_index = len(filtered_ipo_docs) + 1
             filtered_ipo_docs.append(ipo_doc)
             filtered_analyst_docs.append(analyst_doc)
+            filtered_ipo_paths.append(ipo_path)
+            filtered_analyst_paths.append(analyst_path)
+            kept_pair_ids.append(pair_index)
             # Preserve the original pair index so labels still map back to the
             # source documents after zero-token filtering.
             filtered_ipo_order_dict[f"doc{new_index}"] = f"ipo_{pair_index}"
@@ -481,6 +492,9 @@ def check_empty_docs(
         analyst_order_dict = filtered_analyst_order_dict
     else:
         removed_pairs_info = []
+        filtered_ipo_paths = list(ipo_paths)
+        filtered_analyst_paths = list(analyst_paths)
+        kept_pair_ids = list(range(1, len(ipo_docs) + 1))
 
     if len(ipo_docs) != len(analyst_docs):
         raise ValueError(
@@ -521,7 +535,198 @@ def check_empty_docs(
     ) as f:
         json.dump(combined_order_dict, f, indent=2)
 
+    if return_metadata:
+        metadata = {
+            "kept_pair_ids": kept_pair_ids,
+            "filtered_ipo_paths": filtered_ipo_paths,
+            "filtered_analyst_paths": filtered_analyst_paths,
+            "removed_pairs": removed_pairs_info,
+        }
+        return ipo_docs, analyst_docs, metadata
+
     return ipo_docs, analyst_docs
+
+
+@dataclass(frozen=True)
+class PreprocessedPair:
+    pair_id: int
+    ipo_tokens: List[str]
+    analyst_tokens: List[str]
+    ipo_path: str
+    analyst_path: str
+
+
+@dataclass
+class PreprocessedPairsResult:
+    pairs: List[PreprocessedPair]
+    removed_pairs: List[Dict[str, Any]]
+    order_metadata_path: Path
+    zero_token_report_path: Path
+
+
+def train_ngram_models(
+    texts: List[List[str]],
+    *,
+    min_count: int = 5,
+    threshold: int = 100,
+) -> Tuple[models.phrases.Phraser, models.phrases.Phraser]:
+    """
+    Fit bigram and trigram models on the provided tokenized texts.
+    """
+    if not texts:
+        raise ValueError("Cannot train n-gram models on an empty text collection.")
+
+    bigram = models.Phrases(
+        texts,
+        min_count=min_count,
+        threshold=threshold,
+    )
+    bigram_mod = models.phrases.Phraser(bigram)
+
+    trigram = models.Phrases(
+        bigram[texts],
+        threshold=threshold,
+    )
+    trigram_mod = models.phrases.Phraser(trigram)
+
+    return bigram_mod, trigram_mod
+
+
+def apply_ngram_models(
+    texts: List[List[str]],
+    bigram_mod: models.phrases.Phraser,
+    trigram_mod: models.phrases.Phraser,
+) -> List[List[str]]:
+    """
+    Apply fitted bigram and trigram models to a collection of texts.
+    """
+    if not texts:
+        return []
+    texts_with_bigrams = make_bigrams(texts, bigram_mod)
+    texts_with_trigrams = make_trigrams(texts_with_bigrams, trigram_mod, bigram_mod)
+    return texts_with_trigrams
+
+
+def preprocess_pairs_for_cv(
+    pair_records: List[PairRecord],
+    config: Dict,
+    *,
+    batch_size: int,
+    num_cores: int,
+    output_dir: Path,
+    mode: str = "cv",
+) -> PreprocessedPairsResult:
+    """
+    Preprocess IPO/analyst document pairs once for cross-validation.
+
+    Returns paired token lists (no n-grams applied) alongside metadata so that
+    CV folds can operate on in-memory representations without re-running spaCy.
+    """
+    if not pair_records:
+        raise ValueError("No pair records provided for preprocessing.")
+
+    preprocessed_dir = output_dir / "preprocessed"
+    preprocessed_dir.mkdir(parents=True, exist_ok=True)
+
+    ipo_paths = [record.ipo_path for record in pair_records]
+    analyst_paths = [record.analyst_path for record in pair_records]
+
+    ipo_generator = utils.BatchStream(ipo_paths, batch_size)
+    analyst_generator = utils.BatchStream(analyst_paths, batch_size)
+
+    stop_words = list(load_stop_words(config))
+
+    ipo_docs, ipo_zero_token_docs, ipo_paths_processed = process_all_batches(
+        doc_generator=ipo_generator,
+        config=config,
+        stop_words=stop_words,
+        num_workers=num_cores,
+        dataset_label="ipo",
+        mode=mode,
+    )
+    check_document_lengths(texts=ipo_docs, report_type="ipo")
+
+    analyst_docs, analyst_zero_token_docs, analyst_paths_processed = (
+        process_all_batches(
+            doc_generator=analyst_generator,
+            config=config,
+            stop_words=stop_words,
+            num_workers=num_cores,
+            dataset_label="analyst",
+            mode=mode,
+        )
+    )
+    check_document_lengths(texts=analyst_docs, report_type="analyst")
+
+    (
+        ipo_docs,
+        analyst_docs,
+        metadata,
+    ) = check_empty_docs(
+        ipo_zero_token_docs=ipo_zero_token_docs,
+        analyst_zero_token_docs=analyst_zero_token_docs,
+        ipo_docs=ipo_docs,
+        analyst_docs=analyst_docs,
+        ipo_paths=ipo_paths_processed,
+        analyst_paths=analyst_paths_processed,
+        output_dir=output_dir,
+        mode=mode,
+        return_metadata=True,
+    )
+
+    kept_pair_ids = metadata["kept_pair_ids"]
+    filtered_ipo_paths = metadata["filtered_ipo_paths"]
+    filtered_analyst_paths = metadata["filtered_analyst_paths"]
+    removed_pairs = metadata["removed_pairs"]
+
+    if len(ipo_docs) != len(analyst_docs):
+        raise ValueError(
+            "IPO and analyst document counts diverged after zero-token filtering."
+        )
+
+    if len(kept_pair_ids) != len(ipo_docs):
+        raise ValueError("Mismatch between kept pair metadata and processed documents.")
+
+    pairs: List[PreprocessedPair] = []
+    for (
+        pair_id,
+        ipo_tokens,
+        analyst_tokens,
+        ipo_path,
+        analyst_path,
+    ) in zip(
+        kept_pair_ids,
+        ipo_docs,
+        analyst_docs,
+        filtered_ipo_paths,
+        filtered_analyst_paths,
+    ):
+        pairs.append(
+            PreprocessedPair(
+                pair_id=pair_id,
+                ipo_tokens=ipo_tokens,
+                analyst_tokens=analyst_tokens,
+                ipo_path=ipo_path,
+                analyst_path=analyst_path,
+            )
+        )
+
+    logger.info(
+        "Preprocessed %d IPO/analyst pairs for cross-validation (removed %d pairs)",
+        len(pairs),
+        len(removed_pairs),
+    )
+
+    order_metadata_path = preprocessed_dir / f"{mode}_combined_order_dict.json"
+    zero_token_report_path = preprocessed_dir / f"{mode}_zero_token_documents.json"
+
+    return PreprocessedPairsResult(
+        pairs=pairs,
+        removed_pairs=removed_pairs,
+        order_metadata_path=order_metadata_path,
+        zero_token_report_path=zero_token_report_path,
+    )
+
 
 
 def apply_bigrams_and_trigrams(
@@ -552,7 +757,7 @@ def apply_bigrams_and_trigrams(
         bigram_mod = models.phrases.Phraser(bigram)
         trigram_mod = models.phrases.Phraser(trigram)
 
-        # Persist phrasers for reuse on val/test
+        # Persist phrasers for reuse on test
         bigram_mod.save(str(output_dir / f"preprocessed/{mode}_bigram.phr"))
         trigram_mod.save(str(output_dir / f"preprocessed/{mode}_trigram.phr"))
 
@@ -594,7 +799,7 @@ def create_texts_with_preprocessing(
         config: Configuration dictionary from YAML
         num_cores: Number of cores to use
         output_dir: Path object pointing to the output directory
-        mode: Processing mode (train/val/test)
+        mode: Processing mode (train/test)
 
     Returns:
         List[List[str]]: List of processed documents
@@ -639,17 +844,44 @@ def create_dictionary(
     texts: List[List[str]],
     output_dir: Path,
     mode: str,
+    filter_params: Optional[Dict[str, Any]] = None,
 ) -> Tuple[corpora.Dictionary, List[List[Tuple[int, int]]]]:
     """
     Create a dictionary from the texts.
     """
     dictionary = corpora.Dictionary(texts)  # Type: corpora.Dictionary
-    print(f"Length of dictionary before filtering extremes: {len(dictionary)}")
+    initial_len = len(dictionary)
+    logger.info(
+        "[%s] Dictionary size before filtering: %d tokens",
+        mode,
+        initial_len,
+    )
 
-    # filter extremes
-    dictionary.filter_extremes(no_below=10, no_above=0.5)
+    if filter_params:
+        no_below = filter_params.get("no_below")
+        no_above = filter_params.get("no_above")
+        keep_n = filter_params.get("keep_n")
 
-    print(f"Length of dictionary after filtering extremes: {len(dictionary)}")
+        dictionary.filter_extremes(
+            no_below=no_below,
+            no_above=no_above,
+            keep_n=keep_n,
+        )
+
+        if len(dictionary) == 0:
+            logger.warning(
+                "[%s] Dictionary emptied by filter_extremes (params=%s). "
+                "Rebuilding dictionary without filtering for this split.",
+                mode,
+                filter_params,
+            )
+            dictionary = corpora.Dictionary(texts)
+
+    logger.info(
+        "[%s] Dictionary size after filtering: %d tokens",
+        mode,
+        len(dictionary),
+    )
 
     # Create BOW corpus
     bow_corpus = [
@@ -664,17 +896,17 @@ def corpus_filtering_from_dictionary(
     texts: List[List[str]],
 ) -> List[List[Tuple[int, int]]]:
     """
-    Filter the test/val corpus based on the train dictionary and tfidf model.
+    Filter the test corpus based on the train dictionary and tfidf model.
 
     Args:
         dic (corpora.Dictionary): Gensim shared/train dictionary mapping word IDs to words for the train corpus
-        texts (List[List[str]]): List of tokenized documents for the test/val corpus
+        texts (List[List[str]]): List of tokenized documents for the test corpus
 
     Returns:
         List[List[Tuple[int, int]]]: Filtered bow corpus
         Example:
         Shared/train dictionary: {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4}
-        Test/val texts: [['a', 'b', 'c'], ['b', 'c'], ['a', 'b', 'b', 'e']]
+        Test texts: [['a', 'b', 'c'], ['b', 'c'], ['a', 'b', 'b', 'e']]
         Filtered bow corpus: [
             [(0, 1), (1, 1), (2, 1)],
             [(1, 1), (2, 1)],
@@ -714,6 +946,7 @@ def prep_data_train(
         texts=texts,
         output_dir=output_dir,
         mode=mode,
+        filter_params=config.get("preprocessing", {}).get("filter_extremes"),
     )
 
     # Save BOW corpus using MmCorpus.serialize
@@ -811,24 +1044,20 @@ if __name__ == "__main__":
     print("===============================================")
 
     # Load all documents for shared dictionary creation
-    train_ipo_generator, val_ipo_generator, test_ipo_generator = (
-        utils.load_splits_from_paths(
-            file_paths=ipo_file_paths,
-            batch_size=batch_size,
-            num_docs=num_docs,
-            test_perc=test_perc,  # Load all as training for dictionary
-            report_type="ipo",
-        )
+    train_ipo_generator, test_ipo_generator = utils.load_splits_from_paths(
+        file_paths=ipo_file_paths,
+        batch_size=batch_size,
+        num_docs=num_docs,
+        test_perc=test_perc,  # Load all as training for dictionary
+        report_type="ipo",
     )
 
-    train_analyst_generator, val_analyst_generator, test_analyst_generator = (
-        utils.load_splits_from_paths(
-            file_paths=analyst_file_paths,
-            batch_size=batch_size,
-            num_docs=num_docs,
-            test_perc=test_perc,  # Load all as training for dictionary
-            report_type="analyst",
-        )
+    train_analyst_generator, test_analyst_generator = utils.load_splits_from_paths(
+        file_paths=analyst_file_paths,
+        batch_size=batch_size,
+        num_docs=num_docs,
+        test_perc=test_perc,  # Load all as training for dictionary
+        report_type="analyst",
     )
 
     train_texts, train_dictionary, train_bow_corpus = prep_data_train(
@@ -840,58 +1069,16 @@ if __name__ == "__main__":
         mode="train",
     )
 
-    val_texts, val_corpus = prep_data_non_train(
-        ipo_generator=val_ipo_generator,
-        analyst_generator=val_analyst_generator,
+    test_texts, test_corpus = prep_data_non_train(
+        ipo_generator=test_ipo_generator,
+        analyst_generator=test_analyst_generator,
         train_dictionary=train_dictionary,
         config=config,
         num_cores=num_cores,
         output_dir=output_dir,
-        mode="val",
+        mode="test",
         phraser_source_mode="train",
     )
-
-    print("===============================================")
-    print("Train + Val Preprocessing Started")
-    print("===============================================")
-
-    # Prepare combined train+val artifacts for final model training
-    train_val_ipo_generator = utils.BatchStream(
-        train_ipo_generator.file_paths + val_ipo_generator.file_paths,
-        batch_size,
-    )
-    train_val_analyst_generator = utils.BatchStream(
-        train_analyst_generator.file_paths + val_analyst_generator.file_paths,
-        batch_size,
-    )
-
-    train_val_texts, train_val_dictionary, train_val_bow_corpus = prep_data_train(
-        ipo_generator=train_val_ipo_generator,
-        analyst_generator=train_val_analyst_generator,
-        config=config,
-        num_cores=num_cores,
-        output_dir=output_dir,
-        mode="train_val",
-    )
-
-    # Re-run test preprocessing using train+val phrasers/dictionary for final evaluation
-    test_ipo_generator.reset()
-    test_analyst_generator.reset()
-
-    test_final_texts, test_final_corpus = prep_data_non_train(
-        ipo_generator=test_ipo_generator,
-        analyst_generator=test_analyst_generator,
-        train_dictionary=train_val_dictionary,
-        config=config,
-        num_cores=num_cores,
-        output_dir=output_dir,
-        mode="test",
-        phraser_source_mode="train_val",
-    )
-
-    print("===============================================")
-    print("Train + Val + Test Final Preprocessing Complete")
-    print("===============================================")
 
     # Once all artifacts have been created, remove these files from the output directory
     # delete all files ending with .phr
