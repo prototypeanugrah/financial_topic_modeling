@@ -1,0 +1,531 @@
+{
+  "configuration": {
+    "folds": 5,
+    "topic_numbers": [
+      1,
+      3,
+      5,
+      7,
+      9
+    ],
+    "random_seeds": [
+      1,
+      3,
+      5
+    ]
+  },
+  "fold_results": [
+    {
+      "fold": 1,
+      "num_topics": 1,
+      "best_seed": 5,
+      "train_perplexity": 438.3145625048199,
+      "test_perplexity": 464.40009646119273,
+      "dictionary_size": 55880,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 438.3148727071709,
+        "3": 438.314945961272,
+        "5": 438.3145625048199
+      }
+    },
+    {
+      "fold": 1,
+      "num_topics": 3,
+      "best_seed": 3,
+      "train_perplexity": 367.7930482624497,
+      "test_perplexity": 399.1032597943855,
+      "dictionary_size": 55880,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 372.46538074524034,
+        "3": 367.7930482624497,
+        "5": 372.0744577004709
+      }
+    },
+    {
+      "fold": 1,
+      "num_topics": 5,
+      "best_seed": 1,
+      "train_perplexity": 348.9063418250811,
+      "test_perplexity": 388.90609573992253,
+      "dictionary_size": 55880,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 348.9063418250811,
+        "3": 350.628174083672,
+        "5": 352.1657626065168
+      }
+    },
+    {
+      "fold": 1,
+      "num_topics": 7,
+      "best_seed": 5,
+      "train_perplexity": 337.266443140603,
+      "test_perplexity": 384.6250090723118,
+      "dictionary_size": 55880,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 340.0864929222922,
+        "3": 344.9421472591307,
+        "5": 337.266443140603
+      }
+    },
+    {
+      "fold": 1,
+      "num_topics": 9,
+      "best_seed": 5,
+      "train_perplexity": 331.1709921221925,
+      "test_perplexity": 385.83153544073656,
+      "dictionary_size": 55880,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 332.9867322833942,
+        "3": 332.4980389757963,
+        "5": 331.1709921221925
+      }
+    },
+    {
+      "fold": 2,
+      "num_topics": 1,
+      "best_seed": 3,
+      "train_perplexity": 437.89256735224257,
+      "test_perplexity": 464.7945697185163,
+      "dictionary_size": 55416,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 437.89327939134773,
+        "3": 437.89256735224257,
+        "5": 437.8932022518458
+      }
+    },
+    {
+      "fold": 2,
+      "num_topics": 3,
+      "best_seed": 5,
+      "train_perplexity": 365.3203660971313,
+      "test_perplexity": 398.4660046444981,
+      "dictionary_size": 55416,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 369.63577837836493,
+        "3": 372.6191543295568,
+        "5": 365.3203660971313
+      }
+    },
+    {
+      "fold": 2,
+      "num_topics": 5,
+      "best_seed": 5,
+      "train_perplexity": 349.98026344745944,
+      "test_perplexity": 393.5162596875819,
+      "dictionary_size": 55416,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 358.5567174895322,
+        "3": 354.7458384561059,
+        "5": 349.98026344745944
+      }
+    },
+    {
+      "fold": 2,
+      "num_topics": 7,
+      "best_seed": 1,
+      "train_perplexity": 336.3424359162522,
+      "test_perplexity": 383.54910520828935,
+      "dictionary_size": 55416,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 336.3424359162522,
+        "3": 346.2478827466564,
+        "5": 341.7039975326937
+      }
+    },
+    {
+      "fold": 2,
+      "num_topics": 9,
+      "best_seed": 1,
+      "train_perplexity": 329.4177403011423,
+      "test_perplexity": 380.97927956008016,
+      "dictionary_size": 55416,
+      "train_docs": 2554,
+      "train_docs_effective": 2554,
+      "test_docs": 640,
+      "test_docs_effective": 640,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 329.4177403011423,
+        "3": 335.1971929258051,
+        "5": 333.3939033182559
+      }
+    },
+    {
+      "fold": 3,
+      "num_topics": 1,
+      "best_seed": 5,
+      "train_perplexity": 440.67615839945034,
+      "test_perplexity": 457.2198425478852,
+      "dictionary_size": 54928,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 440.6764717629993,
+        "3": 440.67664208699614,
+        "5": 440.67615839945034
+      }
+    },
+    {
+      "fold": 3,
+      "num_topics": 3,
+      "best_seed": 3,
+      "train_perplexity": 372.4590458837819,
+      "test_perplexity": 386.96834848315405,
+      "dictionary_size": 54928,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 374.3340008110425,
+        "3": 372.4590458837819,
+        "5": 387.8340085205992
+      }
+    },
+    {
+      "fold": 3,
+      "num_topics": 5,
+      "best_seed": 1,
+      "train_perplexity": 353.25543846907027,
+      "test_perplexity": 376.90600115472375,
+      "dictionary_size": 54928,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 353.25543846907027,
+        "3": 360.1392878761835,
+        "5": 358.2921434000241
+      }
+    },
+    {
+      "fold": 3,
+      "num_topics": 7,
+      "best_seed": 1,
+      "train_perplexity": 341.32760319957583,
+      "test_perplexity": 372.5462048056461,
+      "dictionary_size": 54928,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 341.32760319957583,
+        "3": 341.63306822733523,
+        "5": 351.55331040694875
+      }
+    },
+    {
+      "fold": 3,
+      "num_topics": 9,
+      "best_seed": 1,
+      "train_perplexity": 334.347056225573,
+      "test_perplexity": 369.57430629572445,
+      "dictionary_size": 54928,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 334.347056225573,
+        "3": 336.57836644357843,
+        "5": 340.42412898004346
+      }
+    },
+    {
+      "fold": 4,
+      "num_topics": 1,
+      "best_seed": 3,
+      "train_perplexity": 437.90543285127,
+      "test_perplexity": 467.29553134917404,
+      "dictionary_size": 55400,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 437.9057044917683,
+        "3": 437.90543285127,
+        "5": 437.9059846729035
+      }
+    },
+    {
+      "fold": 4,
+      "num_topics": 3,
+      "best_seed": 1,
+      "train_perplexity": 365.9988396604685,
+      "test_perplexity": 403.1512861741491,
+      "dictionary_size": 55400,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 365.9988396604685,
+        "3": 366.78745526178517,
+        "5": 366.9830428811502
+      }
+    },
+    {
+      "fold": 4,
+      "num_topics": 5,
+      "best_seed": 5,
+      "train_perplexity": 348.0957817821334,
+      "test_perplexity": 393.2618270918541,
+      "dictionary_size": 55400,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 350.95886252904324,
+        "3": 351.78928304312234,
+        "5": 348.0957817821334
+      }
+    },
+    {
+      "fold": 4,
+      "num_topics": 7,
+      "best_seed": 1,
+      "train_perplexity": 336.2768423770987,
+      "test_perplexity": 390.5842065515757,
+      "dictionary_size": 55400,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 336.2768423770987,
+        "3": 339.4977601095156,
+        "5": 339.4085763579377
+      }
+    },
+    {
+      "fold": 4,
+      "num_topics": 9,
+      "best_seed": 5,
+      "train_perplexity": 327.516165122215,
+      "test_perplexity": 384.18150017462204,
+      "dictionary_size": 55400,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 331.5318446758897,
+        "3": 333.10334560023296,
+        "5": 327.516165122215
+      }
+    },
+    {
+      "fold": 5,
+      "num_topics": 1,
+      "best_seed": 1,
+      "train_perplexity": 438.2680714019803,
+      "test_perplexity": 460.0074251257637,
+      "dictionary_size": 55103,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 438.2680714019803,
+        "3": 438.26851136541535,
+        "5": 438.2680974485368
+      }
+    },
+    {
+      "fold": 5,
+      "num_topics": 3,
+      "best_seed": 3,
+      "train_perplexity": 365.17543793979314,
+      "test_perplexity": 393.88525587776786,
+      "dictionary_size": 55103,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 373.41560294090795,
+        "3": 365.17543793979314,
+        "5": 380.91505756983304
+      }
+    },
+    {
+      "fold": 5,
+      "num_topics": 5,
+      "best_seed": 1,
+      "train_perplexity": 348.3493226298665,
+      "test_perplexity": 384.6573746521326,
+      "dictionary_size": 55103,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 348.3493226298665,
+        "3": 352.55376061768953,
+        "5": 350.21020790413615
+      }
+    },
+    {
+      "fold": 5,
+      "num_topics": 7,
+      "best_seed": 3,
+      "train_perplexity": 336.83350633894094,
+      "test_perplexity": 379.6867083503309,
+      "dictionary_size": 55103,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 341.30338469499026,
+        "3": 336.83350633894094,
+        "5": 338.45070530348613
+      }
+    },
+    {
+      "fold": 5,
+      "num_topics": 9,
+      "best_seed": 3,
+      "train_perplexity": 330.02995846567455,
+      "test_perplexity": 379.18756787133105,
+      "dictionary_size": 55103,
+      "train_docs": 2556,
+      "train_docs_effective": 2556,
+      "test_docs": 638,
+      "test_docs_effective": 638,
+      "empty_train_docs": 0,
+      "empty_test_docs": 0,
+      "per_seed_train_perplexity": {
+        "1": 332.40433390939074,
+        "3": 330.02995846567455,
+        "5": 330.31875393123573
+      }
+    }
+  ],
+  "aggregated": {
+    "1": {
+      "train_mean": 438.6113585019526,
+      "train_std": 1.170931707532638,
+      "test_mean": 462.7434930405064,
+      "test_std": 4.051823219083059,
+      "folds_contributed": 5
+    },
+    "3": {
+      "train_mean": 367.3493475687249,
+      "train_std": 3.0402470160171187,
+      "test_mean": 396.3148309947909,
+      "test_std": 6.172511102674665,
+      "folds_contributed": 5
+    },
+    "5": {
+      "train_mean": 349.7174296307221,
+      "train_std": 2.1062947380727977,
+      "test_mean": 387.449511665243,
+      "test_std": 6.922277846507526,
+      "folds_contributed": 5
+    },
+    "7": {
+      "train_mean": 337.6093661944941,
+      "train_std": 2.116930160406821,
+      "test_mean": 382.19824679763076,
+      "test_std": 6.661607436751789,
+      "folds_contributed": 5
+    },
+    "9": {
+      "train_mean": 330.49638244735945,
+      "train_std": 2.527127928844205,
+      "test_mean": 379.95083786849887,
+      "test_std": 6.3599093619114795,
+      "folds_contributed": 5
+    }
+  }
+}
