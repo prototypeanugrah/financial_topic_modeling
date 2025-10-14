@@ -26,8 +26,8 @@ WITHOUT_NGRAMS_SUBDIR="${BASE_SUBDIR}/without_ngrams"
 echo "Running with n-grams enabled..."
 uv run main.py --config "${CONFIG_PATH}" --output_subdir "${WITH_NGRAMS_SUBDIR}" "${EXTRA_ARGS[@]}"
 
-echo "Running with n-grams disabled..."
-uv run main.py --config "${CONFIG_PATH}" --output_subdir "${WITHOUT_NGRAMS_SUBDIR}" --no_ngrams "${EXTRA_ARGS[@]}"
+# echo "Running with n-grams disabled..."
+# uv run main.py --config "${CONFIG_PATH}" --output_subdir "${WITHOUT_NGRAMS_SUBDIR}" --no_ngrams "${EXTRA_ARGS[@]}"
 
 echo "Completed runs. Results stored under:"
 echo "  outputs/${WITH_NGRAMS_SUBDIR}"

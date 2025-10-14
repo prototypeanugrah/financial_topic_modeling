@@ -219,7 +219,6 @@ def _train_full_model_and_export(
         dictionary.filter_extremes(
             no_below=filter_params.get("no_below"),
             no_above=filter_params.get("no_above"),
-            keep_n=filter_params.get("keep_n"),
         )
         if len(dictionary) == 0:
             dictionary = corpora.Dictionary(texts)
@@ -297,9 +296,10 @@ def _train_full_model_and_export(
         topic_file = export_dir / f"topic_{topic_idx}_document_word_probs.csv"
         with open(topic_file, "w", encoding="utf-8", newline="") as topic_csv:
             writer = csv.writer(topic_csv)
-            writer.writerow(["shared_dict", "topic_probability"] + [
-                dictionary[token_id] for token_id in range(len(dictionary))
-            ])
+            writer.writerow(
+                ["shared_dict", "topic_probability"]
+                + [dictionary[token_id] for token_id in range(len(dictionary))]
+            )
             for label in labels:
                 topic_prob = doc_topic_probs.get(label, {}).get(topic_idx, 0.0)
                 scaled_probs = [f"{topic_prob * prob:.6f}" for prob in word_probs]

@@ -173,9 +173,13 @@ def init_worker(spacy_model, disabled, allowed_pos, stop_words: List[str]):
         stop_words: List of stopwords
     """
     global _NLP, _STOP, _ALLOWED_POS
-    _NLP = spacy.load(spacy_model, disable=disabled)
-    _ALLOWED_POS = set(allowed_pos)
-    _STOP = stop_words
+    try:
+        _NLP = spacy.load(spacy_model, disable=disabled)
+        _ALLOWED_POS = set(allowed_pos)
+        _STOP = stop_words
+    except Exception as e:
+        logger.error(f"Failed to initialize worker: {e}")
+        raise
 
 
 def make_bigrams(
@@ -308,19 +312,24 @@ def run_batch(
     Returns:
         List[List[str]]: List of processed documents
     """
-    with ProcessPoolExecutor(
-        max_workers=num_workers,
-        initializer=init_worker,
-        initargs=(
-            config["preprocessing"]["spacy_model"],
-            config["preprocessing"]["spacy_disabled"],
-            config["preprocessing"]["allowed_postags"],
-            stop_words,
-        ),
-    ) as ex:
-        return list(
-            ex.map(process_document, docs),
-        )
+    try:
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=init_worker,
+            initargs=(
+                config["preprocessing"]["spacy_model"],
+                config["preprocessing"]["spacy_disabled"],
+                config["preprocessing"]["allowed_postags"],
+                stop_words,
+            ),
+        ) as ex:
+            return list(
+                ex.map(process_document, docs),
+            )
+    except Exception as e:
+        logger.error(f"Error in run_batch: {e}")
+        logger.error(f"Number of workers: {num_workers}, Number of docs: {len(docs)}")
+        raise
 
 
 def process_all_batches(
@@ -726,7 +735,6 @@ def preprocess_pairs_for_cv(
         order_metadata_path=order_metadata_path,
         zero_token_report_path=zero_token_report_path,
     )
-
 
 
 def apply_bigrams_and_trigrams(
