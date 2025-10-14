@@ -5,7 +5,7 @@ preprocessing:
   num_cores_preprocessing: 6
   test_perc: 0.1
   stop_words_extra: ./stopwords
-  spacy_model: en_core_web_sm
+  spacy_model: en_core_web_md
   spacy_disabled:
     - parser
     - ner
@@ -17,14 +17,13 @@ preprocessing:
   filter_extremes:
     no_below: 10 # filter out words that appear in less than 5 documents. Increasing this reduces the number of tokens in the dictionary.
     no_above: 0.5 # filter out words that appear in more than 50% of documents. Increasing this reduces the number of tokens in the dictionary.
-    keep_n: 100000
 
 # LDA model settings
 lda:
   save_intermediate_models: true  # Save models to disk during optimization to reduce memory usage
   topic_range:
     start: 1 # start at 1 topics
-    limit: 12 # limit at 50 topics
+    limit: 15 # limit at 50 topics
     step: 2
   gensim:
     random_seeds: [1, 3, 5]
