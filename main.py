@@ -252,27 +252,33 @@ def _train_full_model_and_export(
     export_dir = output_dir / "full_model_export"
     export_dir.mkdir(parents=True, exist_ok=True)
 
-    topic_word_distribution = {
-        f"topic_{topic_idx}": [
-            [float(prob), dictionary[token_id]]
-            for token_id, prob in enumerate(word_probs)
-        ]
-        for topic_idx, word_probs in enumerate(topic_word_probs)
-    }
-
     doc_topic_distribution = {}
+    doc_topic_probs = {}
     for label, bow in zip(labels, corpus):
         doc_topics = final_model.get_document_topics(bow, minimum_probability=0.0)
         doc_topic_distribution[label] = [
             [float(prob), int(topic_id)] for topic_id, prob in doc_topics
         ]
+        doc_topic_probs[label] = {
+            int(topic_id): float(prob) for topic_id, prob in doc_topics
+        }
+
+    topic_word_top = {
+        f"topic_{topic_idx}": [
+            [float(prob), dictionary[token_id]]
+            for token_id, prob in sorted(
+                enumerate(word_probs), key=lambda item: item[1], reverse=True
+            )[:50]
+        ]
+        for topic_idx, word_probs in enumerate(topic_word_probs)
+    }
 
     with open(
-        export_dir / f"topic_word_distribution_{best_topic}_topics.json",
+        export_dir / f"topic_word_top_words_{best_topic}_topics.json",
         "w",
         encoding="utf-8",
     ) as fh:
-        json.dump(topic_word_distribution, fh, indent=2)
+        json.dump(topic_word_top, fh, indent=2)
 
     with open(
         export_dir / f"doc_topic_distribution_{best_topic}_topics.json",
@@ -280,6 +286,24 @@ def _train_full_model_and_export(
         encoding="utf-8",
     ) as fh:
         json.dump(doc_topic_distribution, fh, indent=2)
+
+    dictionary.save(export_dir / f"full_dictionary_{best_topic}_topics.id2word")
+    corpora.MmCorpus.serialize(
+        str(export_dir / f"full_corpus_{best_topic}_topics.mm"),
+        corpus,
+    )
+
+    for topic_idx, word_probs in enumerate(topic_word_probs):
+        topic_file = export_dir / f"topic_{topic_idx}_document_word_probs.csv"
+        with open(topic_file, "w", encoding="utf-8", newline="") as topic_csv:
+            writer = csv.writer(topic_csv)
+            writer.writerow(["shared_dict", "topic_probability"] + [
+                dictionary[token_id] for token_id in range(len(dictionary))
+            ])
+            for label in labels:
+                topic_prob = doc_topic_probs.get(label, {}).get(topic_idx, 0.0)
+                scaled_probs = [f"{topic_prob * prob:.6f}" for prob in word_probs]
+                writer.writerow([label, f"{topic_prob:.6f}"] + scaled_probs)
 
     for label, bow in zip(labels, corpus):
         if not bow:
