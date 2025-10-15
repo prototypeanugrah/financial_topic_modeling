@@ -14,6 +14,12 @@ Robust cross-validated Latent Dirichlet Allocation (LDA) analysis of IPO S-1 fil
 - `test_lda_preprocessing.py` stress-tests tokenization, stopword loading, lemmatization, and TF-IDF filtering.
 - `utils.py` aggregates fold-level metrics, exports dominant topic-term distributions, and captures reproducibility metadata.
 
+## Perplexity vs Topics
+![Cross-Validation Perplexity vs Topics](./mean_test_perplexity.png)
+
+- Steep perplexity drop from 1 to 9 topics; marginal gains beyond 11.
+- Nine-topic configuration delivers the lowest held-out perplexity on the illustrated run.
+
 ## Setup with uv
 1. Install uv once (if needed):
    ```bash
@@ -90,12 +96,6 @@ stopwords/                          # Financial-domain stopword extensions
 - `outputs/<subdir>/preprocessed/` — bag-of-words corpora, dictionaries, and zero-token reports to trace data hygiene.
 - `outputs/<subdir>/full_model_export/` — dominant topic word probabilities and label-aligned token exports for the best topic count.
 - `outputs/<subdir>/cv_perplexity_plot_<mode>.png` — topic count selection visualizations (see below).
-
-## Perplexity vs Topics
-![Cross-Validation Perplexity vs Topics](./mean_test_perplexity.png)
-
-- Steep perplexity drop from 1 to 9 topics; marginal gains beyond 11.
-- Nine-topic configuration delivers the lowest held-out perplexity on the illustrated run.
 
 ## Configurability Notes
 - Topic grids, seed lists, and TF-IDF thresholds live under `lda` and `preprocessing` sections in `config.yaml`.
