@@ -92,7 +92,7 @@ stopwords/                          # Financial-domain stopword extensions
 - `outputs/<subdir>/cv_perplexity_plot_<mode>.png` — topic count selection visualizations (see below).
 
 ## Perplexity vs Topics
-![Cross-Validation Perplexity vs Topics](mean_test_perplexity.png)
+![Cross-Validation Perplexity vs Topics](./mean_test_perplexity.png)
 
 - Steep perplexity drop from 1 to 9 topics; marginal gains beyond 11.
 - Nine-topic configuration delivers the lowest held-out perplexity on the illustrated run.
