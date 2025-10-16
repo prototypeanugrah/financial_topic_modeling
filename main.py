@@ -134,11 +134,11 @@ def _serialize_cv_results(
     metrics: Dict[str, Any],
     csv_rows: List[Dict[str, Any]],
 ) -> None:
-    json_path = output_dir / "cross_validation_metrics.json"
+    json_path = str(output_dir / "cross_validation_metrics.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    csv_path = output_dir / "cross_validation_metrics.csv"
+    csv_path = str(output_dir / "cross_validation_metrics.csv")
     if csv_rows:
         fieldnames = list(csv_rows[0].keys())
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -286,14 +286,15 @@ def _train_full_model_and_export(
     ) as fh:
         json.dump(doc_topic_distribution, fh, indent=2)
 
-    dictionary.save(export_dir / f"full_dictionary_{best_topic}_topics.id2word")
+    dictionary.save(str(export_dir / f"full_dictionary_{best_topic}_topics.id2word"))
     corpora.MmCorpus.serialize(
         str(export_dir / f"full_corpus_{best_topic}_topics.mm"),
         corpus,
     )
+    final_model.save(str(export_dir / f"final_model_{best_topic}_topics"))
 
     for topic_idx, word_probs in enumerate(topic_word_probs):
-        topic_file = export_dir / f"topic_{topic_idx}_document_word_probs.csv"
+        topic_file = str(export_dir / f"topic_{topic_idx}_document_word_probs.csv")
         with open(topic_file, "w", encoding="utf-8", newline="") as topic_csv:
             writer = csv.writer(topic_csv)
             writer.writerow(
@@ -316,7 +317,7 @@ def _train_full_model_and_export(
         formatted_probs = [f"{prob:.6f}" for prob in word_probs]
         rows.append([label] + formatted_probs)
 
-    csv_path = export_dir / f"dominant_topic_word_probs_{best_topic}_topics.csv"
+    csv_path = str(export_dir / f"dominant_topic_word_probs_{best_topic}_topics.csv")
 
     with open(csv_path, "w", encoding="utf-8", newline="") as csv_file:
         writer = csv.writer(csv_file)
